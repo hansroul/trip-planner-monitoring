@@ -1,0 +1,9 @@
+title = "poppytrip-monitoring"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Valeurs fictives de développement (base locale) et fichier d'exemple"
+paths = ['''^\.env\.example$''', '''^package-lock\.json$''']
+regexes = ['''dev-only-(reader|app)-pw''', '''postgres:postgres@''']

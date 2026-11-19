@@ -1,0 +1,11 @@
+#!/bin/sh
+# Détection de secrets avant chaque commit : gitleaks (si installé) puis le scanner du dépôt.
+set -e
+
+if command -v gitleaks >/dev/null 2>&1; then
+  gitleaks git --staged --redact --no-banner --config .gitleaks.toml
+else
+  echo "gitleaks non installé : seul le scanner du dépôt est utilisé (voir README)." >&2
+fi
+
+node scripts/check-secrets.mjs --staged

@@ -1,0 +1,17 @@
+# Dépendances et builds
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+
+# Configuration locale : JAMAIS versionnée (secrets)
+.env
+.env.*
+!.env.example
+
+# Divers
+*.log
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
