@@ -88,7 +88,6 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     // limitation de débit et au préfixe réseau de l'audit.
     trustProxy: config.trustProxyHops > 0 ? (_addr: string, hop: number) => hop < config.trustProxyHops : false,
     bodyLimit: 16 * 1024,
-    disableRequestLogging: false,
     return503OnClosing: true,
     // URL mal formée, etc. : même 404 que partout (rien ne doit trahir le contenu du site).
     // URL indécodable : réécrite vers un chemin inconnu pour passer par les mêmes crochets
