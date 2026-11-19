@@ -1,0 +1,25 @@
+# DÉVELOPPEMENT UNIQUEMENT : PostgreSQL local avec les 12 vues du contrat, les deux rôles du site
+# de suivi et de FAUSSES données (dev/db/*.sql, appliqués à la création du volume).
+# Mots de passe publics de développement : jamais utilisés ailleurs.
+#   docker compose up -d db
+#   docker compose down -v    # repartir de zéro
+services:
+  db:
+    image: postgres:18.7-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: poppytrip_dev
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - ./dev/db:/docker-entrypoint-initdb.d:ro
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d poppytrip_dev"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  pgdata:
