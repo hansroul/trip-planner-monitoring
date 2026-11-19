@@ -1,7 +1,10 @@
+import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
+import { App } from './App.js';
+import './styles.css';
 
-function App() {
-  return <main><h1>Suivi PoppyTrip</h1></main>;
-}
-
-createRoot(document.getElementById('root')!).render(<App />);
+createRoot(document.getElementById('root')!).render(
+  <StrictMode>
+    <App />
+  </StrictMode>,
+);
