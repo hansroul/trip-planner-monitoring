@@ -1,4 +1,11 @@
-import { argon2, randomBytes, timingSafeEqual } from 'node:crypto';
+import * as crypto from 'node:crypto';
+import { randomBytes, timingSafeEqual } from 'node:crypto';
+
+// argon2 est intégré à node:crypto depuis Node 24.7 : message clair plutôt qu'une erreur d'import.
+const argon2 = (crypto as Partial<typeof crypto>).argon2!;
+if (typeof argon2 !== 'function') {
+  throw new Error(`Node ${process.version} trop ancien : Node 24.7 ou plus récent requis (voir .nvmrc).`);
+}
 
 /**
  * Mot de passe de l'administrateur : empreinte argon2id au format PHC
