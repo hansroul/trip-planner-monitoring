@@ -1,6 +1,5 @@
 import path from 'node:path';
 import { buildApp } from './app.js';
-import { createSsoProvider } from './auth/sso.js';
 import { ConfigError, loadConfig } from './config.js';
 import { runMigrations } from './db/migrate.js';
 import { createPools } from './db/pools.js';
@@ -22,11 +21,9 @@ async function main(): Promise<void> {
   const pools = createPools(config.db);
   await runMigrations(pools.app);
   const client = await loadClientBundle(path.resolve('dist/client'));
-  const idp = createSsoProvider(config.sso);
-  const app = await buildApp({ config, pools, idp, client, registerApi });
+  const app = await buildApp({ config, pools, client, registerApi });
 
-  // Adresse de retour à déclarer dans PoppyTrip (MONITORING_SSO_CALLBACK_URL) : sans le préfixe.
-  app.log.info('Connexion via PoppyTrip : retour attendu sur PUBLIC_BASE_URL/<préfixe>/auth/callback');
+  app.log.info('Connexion : PUBLIC_BASE_URL/<préfixe>/auth/login');
 
   const stopJobs = startBackgroundJobs({ config, pools, log: app.log });
 

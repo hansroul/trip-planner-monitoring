@@ -28,20 +28,21 @@ Site de suivi (monitoring) **privé** de PoppyTrip, séparé de l’application 
 - Tout le site est monté sous un **préfixe aléatoire** (`ADMIN_PATH_PREFIX`). Pour se connecter :
   `https://<domaine>/<ADMIN_PATH_PREFIX>/auth/login` (à garder en favori).
 - **Sans session, toutes les routes répondent par la même 404**, sauf `/healthz` (« ok »),
-  `/robots.txt` (tout interdit), le démarrage de la connexion et son retour.
-- Connexion avec **ton compte PoppyTrip** : PoppyTrip redemande l’e-mail et le mot de passe sur une
-  page dédiée, vérifie qu’il s’agit du compte autorisé, puis renvoie ici avec un jeton signé Ed25519
-  valable 60 s et lié à la tentative (`state` + `nonce`). Ce site vérifie la signature, l’émetteur,
-  l’audience, le type, l’expiration et l’identifiant du compte (`ADMIN_ACCOUNT_ID`) avec la
-  bibliothèque `jose`. Il ne lit jamais la table `users` et ne reçoit aucune donnée personnelle.
+  `/robots.txt` (tout interdit) et la page de connexion (et sa feuille de style).
+- Connexion avec **les identifiants de ton compte PoppyTrip**, vérifiés par **ce site** :
+  formulaire e-mail + mot de passe, comparés à `ADMIN_EMAIL` et à `ADMIN_PASSWORD_HASH` (empreinte
+  argon2id, la même que celle de PoppyTrip, vérifiée par l’argon2 intégré à Node). PoppyTrip n’est
+  pas modifié et ce site ne lit jamais la table `users`. Le formulaire porte un jeton à usage unique
+  lié à un cookie, l’origine est vérifiée, et un mauvais e-mail ou un mauvais mot de passe reçoit la
+  même réponse « Identifiants refusés. ».
 - Session côté serveur (table `monitoring_app.sessions`, seul un HMAC de l’identifiant est stocké),
   cookie `__Host-` `Secure` `HttpOnly` `SameSite=Strict`, 8 h maximum, 30 min d’inactivité.
 - Modifications (recharges de crédit, déconnexion) : vérification d’origine **et** jeton CSRF.
 - En-têtes : CSP stricte (aucun script ni style en ligne), HSTS, `X-Frame-Options: DENY`,
   `Referrer-Policy: no-referrer`, `Permissions-Policy` restrictive, `noindex`, `nosniff`,
   `Cache-Control: no-store`, aucun CORS.
-- Limitation de débit stricte sur la connexion (10 par 15 min et par adresse IP, et 5 essais de mot
-  de passe par 15 min côté PoppyTrip) et générale sur le reste ; journal d’audit (connexions,
+- Limitation de débit stricte sur la connexion (10 requêtes par 15 min et par adresse IP,
+  affichage du formulaire compris) et générale sur le reste ; journal d’audit (connexions,
   déconnexions, recharges, alertes) sans secret.
 - Deux connexions PostgreSQL : `monitoring_reader` (lecture seule forcée à chaque connexion, TLS
   vérifié hors réseau privé, délai de 5 s) et `monitoring_app_rw` (schéma `monitoring_app` :
@@ -58,10 +59,10 @@ cp .env.example .env             # puis compléter .env (sections 3 à 5)
 npm run dev                      # build du front en continu + serveur relancé à chaque modification
 ```
 
-Ouvrir ensuite `http://localhost:3000/<ADMIN_PATH_PREFIX>/auth/login`. La connexion passe par une
-instance **locale** de PoppyTrip configurée comme en section 3, avec
-`MONITORING_SSO_CALLBACK_URL=http://localhost:3000/<ADMIN_PATH_PREFIX>/auth/callback`. Les cookies
-`Secure` fonctionnent sur `http://localhost` dans les navigateurs récents.
+Ouvrir ensuite `http://localhost:3000/<ADMIN_PATH_PREFIX>/auth/login` et se connecter avec
+`ADMIN_EMAIL` et le mot de passe dont l’empreinte est dans `ADMIN_PASSWORD_HASH` (en local, en
+générer une avec `npm run hash-password`). Les cookies `Secure` fonctionnent sur
+`http://localhost` dans les navigateurs récents.
 
 - Les fausses données sont recréées avec `docker compose down -v && docker compose up -d db`, ou
   sur une autre instance locale avec `DEV_PG_ADMIN_URL=postgres://… npm run db:dev:init -- --recreate`.
@@ -77,44 +78,33 @@ npm run check:secrets
 ```
 
 Les tests recréent une base `monitoring_test` (et `monitoring_test_empty`) sur l’instance locale et
-simulent PoppyTrip (clés Ed25519 générées pour le test).
+utilisent un compte fictif (`admin@example.com`, empreinte générée pendant le test).
 
 ## 3. Connexion avec le compte PoppyTrip
 
-1. Générer la paire de clés (une fois, sur ton poste ; ne jamais versionner la clé privée) :
+Deux variables, rien à changer dans PoppyTrip :
 
-   ```sh
-   openssl genpkey -algorithm ed25519 -out suivi-sso.key        # clé PRIVÉE : PoppyTrip uniquement
-   openssl pkey -in suivi-sso.key -pubout -out suivi-sso.pub    # clé PUBLIQUE : site de suivi
-   ```
+1. `ADMIN_EMAIL` : l’e-mail de ton compte PoppyTrip.
+2. `ADMIN_PASSWORD_HASH` : l’empreinte de ton mot de passe, au choix :
+   - **copiée depuis PoppyTrip** (même mot de passe que dans l’application), une fois, avec le
+     compte principal de la base : `SELECT password_hash FROM users WHERE email = '<ton adresse>';`
+     La valeur commence par `$argon2id$v=19$` ; la coller telle quelle.
+   - **ou générée** : `npm run hash-password` (le mot de passe est lu au clavier, jamais en argument).
 
-   Dans Railway, coller le contenu PEM tel quel (ou sur une ligne avec `\n`), puis supprimer les
-   fichiers locaux ou les ranger dans le gestionnaire de secrets.
-2. Trouver l’identifiant de ton compte PoppyTrip (avec le compte principal de la base) :
-   `SELECT id FROM users WHERE email = '<ton adresse>';`
-3. **Variables de PoppyTrip** (service principal) :
-   - `MONITORING_SSO_PRIVATE_KEY` : contenu de `suivi-sso.key` ;
-   - `MONITORING_SSO_CALLBACK_URL` : `https://<domaine du suivi>/<ADMIN_PATH_PREFIX>/auth/callback` ;
-   - `MONITORING_ADMIN_USER_ID` : l’identifiant de l’étape 2.
-4. **Variables du site de suivi** :
-   - `POPPYTRIP_SSO_URL` : `https://<domaine de PoppyTrip>/api/monitoring/sso` ;
-   - `POPPYTRIP_SSO_PUBLIC_KEY` : contenu de `suivi-sso.pub` (une clé privée est refusée) ;
-   - `ADMIN_ACCOUNT_ID` : le même identifiant.
+Le serveur refuse de démarrer si l’empreinte n’est pas un argon2id aux paramètres suffisants
+(au moins 19 Mio et 2 passes ; PoppyTrip utilise 64 Mio et 3 passes). Le mot de passe lui-même
+n’est jamais stocké ni journalisé.
 
-Déroulement : `/<préfixe>/auth/login` → page « Connexion au suivi » de PoppyTrip (e-mail + mot de
-passe, même si tu es déjà connecté à PoppyTrip) → retour automatique sur le suivi. Un autre compte ou
-un mauvais mot de passe reçoit le même « Identifiants refusés ».
-
-Sécurité : l’accès au suivi vaut celui de ton mot de passe PoppyTrip (PoppyTrip n’a pas de double
-authentification) ; choisis un mot de passe long et unique. Pour changer de clés : générer une
-nouvelle paire et mettre à jour les deux services en même temps.
+Si tu changes ton mot de passe dans PoppyTrip, recopie la nouvelle empreinte (le suivi ne la relit
+pas tout seul). Sécurité : l’accès au suivi vaut celui de ce mot de passe, sans double
+authentification ; choisis-le long et unique, ou ajoute Cloudflare Access (section 9).
 
 ## 4. Génération des secrets
 
 ```sh
 openssl rand -base64 48     # SESSION_SECRET (≥ 32 octets)
 openssl rand -hex 24        # ADMIN_PATH_PREFIX (segment non devinable)
-openssl genpkey -algorithm ed25519 -out suivi-sso.key   # clés de connexion (section 3)
+npm run hash-password       # ADMIN_PASSWORD_HASH, si tu ne copies pas celle de PoppyTrip (section 3)
 ```
 
 Ne jamais réutiliser une valeur entre environnements ; ne jamais la coller dans un fichier versionné,
@@ -125,15 +115,14 @@ un ticket ou un message.
 Toutes sont lues au démarrage et validées ; le serveur **refuse de démarrer** si une variable
 obligatoire manque ou est faible. `.env.example` ne contient que des valeurs fictives.
 
-**Obligatoires (8)**
+**Obligatoires (7)**
 
 | Variable | Description |
 |---|---|
 | `PUBLIC_BASE_URL` | Origine publique, sans chemin (HTTPS en production). |
 | `ADMIN_PATH_PREFIX` | Segment aléatoire (24 à 128 car. `[A-Za-z0-9_-]`) sous lequel tout est monté. |
-| `POPPYTRIP_SSO_URL` | Page de connexion du suivi dans PoppyTrip ; son origine est l’émetteur attendu du jeton et le lien « Application principale ». |
-| `POPPYTRIP_SSO_PUBLIC_KEY` | Clé publique Ed25519 (PEM) de PoppyTrip. |
-| `ADMIN_ACCOUNT_ID` | Identifiant (`users.id`) de ton compte PoppyTrip, le seul autorisé. |
+| `ADMIN_EMAIL` | E-mail de ton compte PoppyTrip, le seul autorisé. |
+| `ADMIN_PASSWORD_HASH` | Empreinte argon2id de ton mot de passe (section 3). |
 | `SESSION_SECRET` | ≥ 32 octets aléatoires. |
 | `DATABASE_URL_READONLY` | Rôle `monitoring_reader` (jamais la `DATABASE_URL` de PoppyTrip). |
 | `DATABASE_URL_APP` | Rôle `monitoring_app_rw`. |
@@ -147,6 +136,7 @@ obligatoire manque ou est faible. `.env.example` ne contient que des valeurs fic
 | `LOG_LEVEL` | `info` | Niveau de journalisation. |
 | `TRUST_PROXY_HOPS` | `0` | Mandataires de confiance devant le service (**Railway : 1**). |
 | `TIMEZONE` | `Europe/Brussels` | Fuseau d’affichage des heures. |
+| `MAIN_APP_URL` | — | Lien « Application principale » dans l’en-tête ; sans valeur : pas de lien. |
 | `DB_SSL_CA` | — | Certificat d’autorité PEM si la base est jointe hors réseau privé. |
 | `DB_SIZE_LIMIT_BYTES` | — | Limite de la base ; sans valeur : « limite non configurée ». |
 | `STORAGE_LIMIT_BYTES` | — | Limite du stockage de fichiers. |
@@ -176,21 +166,19 @@ obligatoire manque ou est faible. `.env.example` ne contient que des valeurs fic
      (compte principal, tous droits) : le serveur refuse de démarrer si l’utilisateur n’est pas le
      rôle attendu.
 3. **Settings → Networking** : générer un domaine (ou un domaine personnalisé), le reporter dans
-   `PUBLIC_BASE_URL` et dans `MONITORING_SSO_CALLBACK_URL` de PoppyTrip.
+   `PUBLIC_BASE_URL`.
 4. Un seul réplica (limitation de débit et cache en mémoire).
 
 ## 7. Ordre de mise en service
 
-1. **Application principale d’abord** : déployer la migration des vues `monitoring_*` et la page de
-   connexion du suivi (branche `monitoring-sso` de PoppyTrip).
+1. **Application principale d’abord** : déployer la migration des vues `monitoring_*`.
 2. Lancer **à la main** `ops/monitoring-roles.sql` de PoppyTrip avec le compte principal (crée
    `monitoring_reader`, `monitoring_app_rw` et le schéma `monitoring_app`) ; ranger les deux mots
    de passe générés dans le gestionnaire de secrets.
-3. Générer la paire de clés et relever l’identifiant de ton compte (section 3) ; ajouter
-   `MONITORING_SSO_PRIVATE_KEY`, `MONITORING_SSO_CALLBACK_URL` et `MONITORING_ADMIN_USER_ID` à
-   PoppyTrip et le redéployer.
+3. Relever l’empreinte du mot de passe de ton compte (section 3).
 4. Créer le service Railway du suivi et ses variables (sections 5 et 6).
-5. Ouvrir `https://<domaine>/<ADMIN_PATH_PREFIX>/auth/login` et se connecter avec ton compte PoppyTrip.
+5. Ouvrir `https://<domaine>/<ADMIN_PATH_PREFIX>/auth/login` et se connecter avec ton e-mail et ton
+   mot de passe PoppyTrip.
 6. Saisir la première recharge (ou le solde initial) du crédit Anthropic, puis éventuellement
    `ANTHROPIC_ADMIN_KEY` et les alertes e-mail.
 
@@ -208,7 +196,7 @@ obligatoire manque ou est faible. `.env.example` ne contient que des valeurs fic
 
 ## 9. Option : Cloudflare Access
 
-Pour une protection supplémentaire, notamment une double authentification que PoppyTrip n’a pas
+Pour une protection supplémentaire, notamment une double authentification
 (configuration, pas de code) : placer le domaine derrière Cloudflare (proxy activé), créer une
 application **Cloudflare Zero Trust → Access → Self-hosted** sur
 `https://<domaine>/<ADMIN_PATH_PREFIX>/*`, politique **Allow** limitée à ta seule adresse e-mail

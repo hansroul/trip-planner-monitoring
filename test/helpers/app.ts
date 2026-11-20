@@ -1,18 +1,34 @@
-import { randomBytes } from 'node:crypto';
+import { argon2Sync, randomBytes } from 'node:crypto';
 import path from 'node:path';
 import type { FastifyInstance } from 'fastify';
 import { inject } from 'vitest';
 import { buildApp, FLOW_COOKIE, SESSION_COOKIE, type AppDeps, type RateLimitSettings } from '../../src/server/app.js';
-import { createSsoProvider } from '../../src/server/auth/sso.js';
 import { loadConfig, type AppConfig } from '../../src/server/config.js';
 import { createPools, type Pools } from '../../src/server/db/pools.js';
 import { loadClientBundle } from '../../src/server/http/static.js';
 import type { LogStream } from '../../src/server/logger.js';
-import { ADMIN_ACCOUNT_ID, SSO_PUBLIC_KEY_PEM, SSO_URL, signSsoToken, type SignOptions } from './mockSso.js';
 
 export const TEST_PREFIX = 'k3J9xQ2mZ7pL4vR8tY1wB6nC';
 export const TEST_ORIGIN = 'https://monitoring.example.test';
 export const BASE = `/${TEST_PREFIX}`;
+export const ADMIN_EMAIL = 'admin@example.com';
+export const ADMIN_PASSWORD = 'mot-de-passe-de-test-correct';
+
+/** Empreinte argon2id (format PHC) d'un mot de passe, paramètres minimaux admis (tests rapides). */
+export function testPasswordHash(password: string, params = { m: 19_456, t: 2, p: 1 }): string {
+  const salt = randomBytes(16);
+  const hash = argon2Sync('argon2id', {
+    message: password,
+    nonce: salt,
+    parallelism: params.p,
+    tagLength: 32,
+    memory: params.m,
+    passes: params.t,
+  });
+  const b64 = (b: Buffer) => b.toString('base64').replace(/=+$/, '');
+  return `$argon2id$v=19$m=${params.m},t=${params.t},p=${params.p}$${b64(salt)}$${b64(hash)}`;
+}
+const ADMIN_PASSWORD_HASH = testPasswordHash(ADMIN_PASSWORD);
 
 export function testEnv(overrides: Record<string, string | undefined> = {}): NodeJS.ProcessEnv {
   const urls = inject('dbUrls');
@@ -21,10 +37,8 @@ export function testEnv(overrides: Record<string, string | undefined> = {}): Nod
     LOG_LEVEL: 'silent',
     PUBLIC_BASE_URL: TEST_ORIGIN,
     ADMIN_PATH_PREFIX: TEST_PREFIX,
-    POPPYTRIP_SSO_URL: SSO_URL,
-    // Forme d'une variable d'environnement : retours à la ligne écrits « \n ».
-    POPPYTRIP_SSO_PUBLIC_KEY: SSO_PUBLIC_KEY_PEM.replace(/\n/g, '\\n'),
-    ADMIN_ACCOUNT_ID,
+    ADMIN_EMAIL,
+    ADMIN_PASSWORD_HASH,
     SESSION_SECRET: randomBytes(48).toString('base64'),
     DATABASE_URL_READONLY: urls.readonly,
     DATABASE_URL_APP: urls.app,
@@ -51,12 +65,10 @@ export async function createTestApp(
 ): Promise<TestApp> {
   const config = loadConfig(testEnv(opts.env));
   const pools = createPools(config.db);
-  const idp = createSsoProvider(config.sso);
   const client = await loadClientBundle(path.resolve('test/fixtures/client'));
   const app = await buildApp({
     config,
     pools,
-    idp,
     client,
     ...(opts.now ? { now: opts.now } : {}),
     ...(opts.rateLimits ? { rateLimits: opts.rateLimits } : {}),
@@ -101,41 +113,41 @@ export interface LoginAttempt {
 }
 
 export interface Tamper {
-  /** Options de signature à modifier (le nonce et l'audience corrects sont fournis). */
-  sign?: Partial<SignOptions>;
-  /** Jeton complet à la place du jeton signé. */
-  token?: (ctx: { nonce: string; audience: string }) => Promise<string> | string;
-  state?: string;
-  omitToken?: boolean;
+  email?: string;
+  password?: string;
+  formToken?: string;
+  omitFormToken?: boolean;
   dropFlowCookie?: boolean;
+  origin?: string | null;
+  secFetchSite?: string;
   extraCookie?: string;
 }
 
-/** Connexion complète, PoppyTrip étant simulé ; `tamper` fausse une étape. */
+/** Affiche le formulaire de connexion : jeton du formulaire et cookie de flux. */
+export async function openLoginForm(t: TestApp): Promise<{ formToken: string; flow: string | undefined; body: string }> {
+  const page = await t.app.inject({ method: 'GET', url: `${BASE}/auth/login` });
+  if (page.statusCode !== 200) throw new Error(`login: ${page.statusCode}`);
+  const formToken = /name="form_token" value="([^"]+)"/.exec(page.body)?.[1] ?? '';
+  return { formToken, flow: setCookieValue(page.headers, FLOW_COOKIE), body: page.body };
+}
+
+/** Connexion complète par le formulaire ; `tamper` fausse une étape. */
 export async function login(t: TestApp, tamper: Tamper = {}): Promise<LoginAttempt> {
-  const start = await t.app.inject({ method: 'GET', url: `${BASE}/auth/login` });
-  if (start.statusCode !== 302) throw new Error(`login: ${start.statusCode}`);
-  const flow = setCookieValue(start.headers, FLOW_COOKIE);
-  const ssoUrl = new URL(String(start.headers.location));
-  const state = ssoUrl.searchParams.get('state') ?? '';
-  const nonce = ssoUrl.searchParams.get('nonce') ?? '';
-  const audience = t.config.publicOrigin;
-  const token = tamper.token
-    ? await tamper.token({ nonce, audience })
-    : await signSsoToken({ nonce, audience, ...tamper.sign });
-  const query = new URLSearchParams({ state: tamper.state ?? state });
-  if (!tamper.omitToken) query.set('token', token);
+  const { formToken, flow } = await openLoginForm(t);
+  const form = new URLSearchParams({ email: tamper.email ?? ADMIN_EMAIL, password: tamper.password ?? ADMIN_PASSWORD });
+  if (!tamper.omitFormToken) form.set('form_token', tamper.formToken ?? formToken);
   const cookies = [tamper.dropFlowCookie || !flow ? null : `${FLOW_COOKIE}=${flow}`, tamper.extraCookie ?? null].filter(Boolean);
-  const cb = await t.app.inject({
-    method: 'GET',
-    url: `${BASE}/auth/callback?${query.toString()}`,
-    headers: cookies.length ? { cookie: cookies.join('; ') } : {},
-  });
+  const headers: Record<string, string> = { 'content-type': 'application/x-www-form-urlencoded' };
+  const origin = tamper.origin === undefined ? t.config.publicOrigin : tamper.origin;
+  if (origin !== null) headers.origin = origin;
+  if (tamper.secFetchSite) headers['sec-fetch-site'] = tamper.secFetchSite;
+  if (cookies.length) headers.cookie = cookies.join('; ');
+  const res = await t.app.inject({ method: 'POST', url: `${BASE}/auth/login`, headers, payload: form.toString() });
   return {
-    statusCode: cb.statusCode,
-    sessionCookie: setCookieValue(cb.headers, SESSION_COOKIE),
-    body: cb.body,
-    headers: cb.headers,
+    statusCode: res.statusCode,
+    sessionCookie: setCookieValue(res.headers, SESSION_COOKIE),
+    body: res.body,
+    headers: res.headers,
   };
 }
 

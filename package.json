@@ -16,6 +16,7 @@
     "test": "vitest run",
     "check:secrets": "node scripts/check-secrets.mjs",
     "db:dev:init": "tsx scripts/dev-db-init.ts",
+    "hash-password": "tsx scripts/hash-password.ts",
     "start:local": "node --env-file=.env dist/server/server/index.js"
   },
   "dependencies": {
@@ -23,7 +24,6 @@
     "@fastify/helmet": "13.2.0",
     "@fastify/rate-limit": "11.2.2",
     "fastify": "5.12.8",
-    "jose": "6.2.18",
     "nodemailer": "10.6.0",
     "pg": "8.23.1",
     "react": "19.3.1",

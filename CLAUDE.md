@@ -24,22 +24,24 @@ paramétré, Zod, Vitest. Interface en français uniquement.
 5. **Jamais de lecture des tables de PoppyTrip**, jamais la `DATABASE_URL` de PoppyTrip. Les
    écritures propres au site vont uniquement dans le schéma `monitoring_app` (rôle
    `monitoring_app_rw`, migrations SQL dans `sql/migrations/`). Ce site ne crée aucun rôle.
-6. **Jamais de journalisation de jetons ou de cookies** (ni jeton PoppyTrip, state, nonce, jeton CSRF,
-   identifiant de session, clé Anthropic, mot de passe). Utiliser `safeError()` / `redactObject()`
+6. **Jamais de journalisation de jetons ou de cookies** (ni mot de passe, e-mail saisi, jeton de formulaire,
+   jeton CSRF, identifiant de session, clé Anthropic). Utiliser `safeError()` / `redactObject()`
    de `src/server/logger.ts` ; les URL sont journalisées sans chaîne de requête et avec le
    préfixe masqué.
 
 ## Autres invariants
 
 - Visiteur sans session : 404 strictement identique partout, sauf `/healthz`, `/robots.txt`,
-  `<préfixe>/auth/login` et `<préfixe>/auth/callback`.
+  `<préfixe>/auth/login` (GET et POST) et `<préfixe>/auth/login.css`.
 - Toute modification (POST/PUT/PATCH/DELETE) exige l'origine exacte ET le jeton CSRF.
 - Politique de contenu stricte : aucun script ni style en ligne, aucune ressource externe (pas de
   CDN, pas de police distante, aucun traceur). Graphiques SVG avec attributs de présentation
   uniquement, jamais d'attribut `style`.
-- Connexion uniquement avec le compte PoppyTrip `ADMIN_ACCOUNT_ID` : jeton Ed25519 de PoppyTrip
-  vérifié par `jose` (`src/server/auth/sso.ts` : algorithme, type, émetteur, audience, âge, nonce
-  lié au cookie de flux, state). Jamais de lecture de la table `users` ; pas de cryptographie maison.
+- Connexion uniquement par e-mail + mot de passe vérifiés par ce site : `ADMIN_EMAIL` et
+  `ADMIN_PASSWORD_HASH` (argon2id au format PHC, celui de PoppyTrip ; `src/server/auth/password.ts`,
+  argon2 de `node:crypto`, comparaison à temps constant). Formulaire avec jeton à usage unique lié
+  au cookie de flux + vérification d'origine ; même réponse pour un mauvais e-mail ou mot de passe.
+  PoppyTrip n'est jamais modifié par ce projet ; jamais de lecture de la table `users`.
 - Pas de dépendance inutile ; versions exactes, figées par `package-lock.json`.
 
 ## Commandes

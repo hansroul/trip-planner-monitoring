@@ -113,7 +113,7 @@ export function App() {
       <header className="top">
         <h1>Suivi PoppyTrip</h1>
         <nav aria-label="Liens">
-          {session ? (
+          {session?.mainAppUrl ? (
             <a href={session.mainAppUrl} rel="noreferrer noopener">
               Application principale
             </a>
@@ -155,7 +155,7 @@ export function App() {
         ) : !error ? (
           <p aria-live="polite">Chargement…</p>
         ) : null}
-        {session ? (
+        {session?.mainAppUrl ? (
           <>
             <InfraBlock onError={(e) => onError(e, setError)} />
             <CreditBlock onError={(e) => onError(e, setError)} />

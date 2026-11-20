@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { REDACTED, redactObject, safeError, stripUrl } from '../src/server/logger.js';
-import { BASE, cookieHeader, createTestApp, login, TEST_PREFIX } from './helpers/app.js';
+import { ADMIN_EMAIL, BASE, cookieHeader, createTestApp, login, TEST_PREFIX } from './helpers/app.js';
 
 describe('journaux', () => {
-  it('ne contiennent ni cookie, ni jeton, ni state, ni jeton CSRF, ni préfixe', async () => {
+  it('ne contiennent ni cookie, ni mot de passe, ni e-mail, ni jeton de formulaire ou CSRF, ni préfixe', async () => {
     const lines: string[] = [];
     const t = await createTestApp({
       env: { LOG_LEVEL: 'trace' },
@@ -13,16 +13,20 @@ describe('journaux', () => {
       const { sessionCookie } = await login(t);
       const s = await t.app.inject({ url: `${BASE}/api/session`, headers: cookieHeader(sessionCookie!) });
       const csrf = s.json().csrfToken as string;
-      await t.app.inject({ url: `${BASE}/auth/callback?token=TOKEN-SECRET-123&state=STATE-SECRET-456` });
+      const refused = await login(t, { password: 'mot-de-passe-journal-alpha', formToken: 'jeton-formulaire-journal' });
+      expect(refused.statusCode).toBe(403);
+      await login(t, { password: 'mot-de-passe-journal-beta' });
       const log = lines.join('\n');
       expect(log.length).toBeGreaterThan(0);
       expect(log).not.toContain(sessionCookie!);
       expect(log).not.toContain(csrf);
-      expect(log).not.toContain('TOKEN-SECRET-123');
-      expect(log).not.toContain('STATE-SECRET-456');
+      expect(log).not.toContain('mot-de-passe-journal-beta');
+      expect(log).not.toContain('mot-de-passe-journal-alpha');
+      expect(log).not.toContain('jeton-formulaire-journal');
+      expect(log).not.toContain(ADMIN_EMAIL);
       expect(log).not.toContain(TEST_PREFIX);
       expect(log).not.toContain(t.config.sessionSecret);
-      expect(log).toContain('/[admin]/auth/callback');
+      expect(log).toContain('/[admin]/auth/login');
     } finally {
       await t.close();
     }

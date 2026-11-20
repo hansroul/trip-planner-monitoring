@@ -1,8 +1,20 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { FLOW_COOKIE, SESSION_COOKIE } from '../src/server/app.js';
 import { SESSION_ABSOLUTE_MS, SESSION_IDLE_MS } from '../src/server/auth/sessions.js';
-import { BASE, cookieHeader, createTestApp, login, setCookieValue, TEST_ORIGIN, type TestApp } from './helpers/app.js';
-import { signHs256WithPublicKey, signSsoToken } from './helpers/mockSso.js';
+import {
+  ADMIN_EMAIL,
+  ADMIN_PASSWORD,
+  BASE,
+  cookieHeader,
+  createTestApp,
+  login,
+  openLoginForm,
+  setCookieHeader,
+  setCookieValue,
+  TEST_ORIGIN,
+  testPasswordHash,
+  type TestApp,
+} from './helpers/app.js';
 
 let t: TestApp;
 let clock = Date.now();
@@ -20,73 +32,124 @@ async function lastAudit(app: TestApp) {
   return rows[0];
 }
 
-describe('connexion avec le compte PoppyTrip', () => {
-  it('accepte le jeton signé de PoppyTrip pour le compte autorisé', async () => {
+const postLogin = (cookie: string | undefined, fields: Record<string, string>) =>
+  t.app.inject({
+    method: 'POST',
+    url: `${BASE}/auth/login`,
+    headers: {
+      'content-type': 'application/x-www-form-urlencoded',
+      origin: t.config.publicOrigin,
+      ...(cookie ? { cookie } : {}),
+    },
+    payload: new URLSearchParams(fields).toString(),
+  });
+
+describe('connexion par e-mail et mot de passe', () => {
+  it('affiche un formulaire sans script, avec jeton et cookie de flux stricts', async () => {
     t = await createTestApp({ now });
-    const r = await login(t);
-    expect(r.statusCode).toBe(200);
+    const page = await t.app.inject({ url: `${BASE}/auth/login` });
+    expect(page.statusCode).toBe(200);
+    expect(page.headers['content-type']).toMatch(/text\/html/);
+    expect(page.body).toContain('name="form_token"');
+    expect(page.body).toContain('autocomplete="current-password"');
+    expect(page.body).not.toMatch(/<script|style=/i);
+    expect(setCookieHeader(page.headers, FLOW_COOKIE)).toMatch(/HttpOnly/i);
+    expect(setCookieHeader(page.headers, FLOW_COOKIE)).toMatch(/SameSite=Strict/i);
+    const css = await t.app.inject({ url: `${BASE}/auth/login.css` });
+    expect(css.statusCode).toBe(200);
+    expect(css.headers['content-type']).toMatch(/text\/css/);
+  });
+
+  it('accepte le bon e-mail et le bon mot de passe (casse et espaces de l’e-mail ignorés)', async () => {
+    t = await createTestApp({ now });
+    const r = await login(t, { email: `  ${ADMIN_EMAIL.toUpperCase()} ` });
+    expect(r.statusCode).toBe(303);
+    expect(r.headers.location).toBe(`${BASE}/`);
     expect(r.sessionCookie).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(setCookieHeader(r.headers, SESSION_COOKIE)).toMatch(/SameSite=Strict/i);
     expect((await t.app.inject({ url: `${BASE}/api/session`, headers: cookieHeader(r.sessionCookie!) })).statusCode).toBe(200);
     expect(await lastAudit(t)).toMatchObject({ event: 'login', outcome: 'success' });
   });
 
+  it('accepte une empreinte aux paramètres de PoppyTrip (m=65536, t=3, p=4)', async () => {
+    const hash = testPasswordHash('autre-mot-de-passe-poppytrip', { m: 65_536, t: 3, p: 4 });
+    t = await createTestApp({ now, env: { ADMIN_PASSWORD_HASH: hash } });
+    expect((await login(t, { password: 'autre-mot-de-passe-poppytrip' })).statusCode).toBe(303);
+  });
+
   it.each([
-    ['state invalide', { state: 'S'.repeat(43) }, 'state_invalid'],
-    ['jeton absent', { omitToken: true }, 'token_missing'],
-    ['jeton mal formé', { token: () => 'pas-un-jeton' }, 'token_invalid'],
-    ['nonce d’une autre tentative', { sign: { nonce: 'N'.repeat(43) } }, 'token_invalid'],
-    ['nonce absent', { sign: { omit: ['nonce' as const] } }, 'token_invalid'],
-    ['jeton expiré', { sign: { ageSeconds: 600 } }, 'token_invalid'],
-    ['jeton trop ancien (durée de vie longue)', { sign: { ageSeconds: 300, ttlSeconds: 3600 } }, 'token_invalid'],
-    ['autre émetteur', { sign: { issuer: 'https://autre.example.test' } }, 'token_invalid'],
-    ['autre audience', { sign: { audience: 'https://autre-site.example.test' } }, 'token_invalid'],
-    ['autre type de jeton', { sign: { typ: 'JWT' } }, 'token_invalid'],
-    ['signature d’une autre clé', { sign: { wrongKey: true } }, 'token_invalid'],
-    ['sans identifiant de jeton (jti)', { sign: { omit: ['jti' as const] } }, 'token_invalid'],
-    ['HS256 avec la clé publique (confusion d’algorithme)', { token: ({ nonce, audience }: { nonce: string; audience: string }) => signHs256WithPublicKey(nonce, audience) }, 'token_invalid'],
-    ['autre compte PoppyTrip', { sign: { sub: '00000000-0000-4000-8000-000000000000' } }, 'account_mismatch'],
-    ['cookie de flux absent', { dropFlowCookie: true }, 'flow_invalid'],
-  ])('refuse : %s', async (_label, tamper, reason) => {
+    ['mauvais mot de passe', { password: 'mot-de-passe-de-test-faux' }, 401, 'credentials'],
+    ['autre e-mail', { email: 'intrus@example.com' }, 401, 'credentials'],
+    ['mot de passe vide', { password: '' }, 401, 'credentials'],
+    ['mot de passe démesuré', { password: 'a'.repeat(2000) }, 401, 'credentials'],
+    ['jeton de formulaire faux', { formToken: 'F'.repeat(43) }, 403, 'form_expired'],
+    ['jeton de formulaire absent', { omitFormToken: true }, 403, 'form_expired'],
+    ['cookie de flux absent', { dropFlowCookie: true }, 403, 'form_expired'],
+    ['origine absente', { origin: null }, 403, 'origin_invalid'],
+    ['autre origine', { origin: 'https://attaquant.example.test' }, 403, 'origin_invalid'],
+    ['requête inter-sites', { secFetchSite: 'cross-site' }, 403, 'origin_invalid'],
+  ])('refuse : %s', async (_label, tamper, status, reason) => {
     t = await createTestApp({ now });
     const r = await login(t, tamper);
-    expect(r.statusCode).toBe(403);
-    expect(r.body).toBe('Connexion refusée.');
+    expect(r.statusCode).toBe(status);
     expect(r.sessionCookie).toBeUndefined();
+    // Formulaire réaffiché avec un nouveau jeton ; rien n'indique quel champ était faux.
+    expect(r.body).toContain('name="form_token"');
+    expect(r.body).not.toContain(ADMIN_EMAIL);
+    if (reason === 'credentials') expect(r.body).toContain('Identifiants refusés.');
     expect(await lastAudit(t)).toMatchObject({ event: 'login', outcome: 'refused', details: { reason } });
   });
 
-  it('un flux de connexion ne sert qu’une fois (rejeu refusé)', async () => {
+  it('mauvais e-mail ou mauvais mot de passe : réponse identique', async () => {
     t = await createTestApp({ now });
-    const start = await t.app.inject({ url: `${BASE}/auth/login` });
-    const flow = setCookieValue(start.headers, FLOW_COOKIE)!;
-    const sso = new URL(String(start.headers.location));
-    const token = await signSsoToken({ nonce: sso.searchParams.get('nonce')!, audience: t.config.publicOrigin });
-    const url = `${BASE}/auth/callback?state=${sso.searchParams.get('state')}&token=${token}`;
-    expect((await t.app.inject({ url, headers: { cookie: `${FLOW_COOKIE}=${flow}` } })).statusCode).toBe(200);
-    expect((await t.app.inject({ url, headers: { cookie: `${FLOW_COOKIE}=${flow}` } })).statusCode).toBe(403);
+    const strip = (b: string) => b.replace(/value="[^"]+"/, '');
+    const a = await login(t, { email: 'intrus@example.com' });
+    const b = await login(t, { password: 'mot-de-passe-de-test-faux' });
+    expect(a.statusCode).toBe(b.statusCode);
+    expect(strip(a.body)).toBe(strip(b.body));
   });
 
-  it('un jeton volé est inutile sans le cookie de flux de la même tentative', async () => {
+  it('un jeton de formulaire ne sert qu’une fois (rejeu refusé)', async () => {
     t = await createTestApp({ now });
-    // Tentative de la victime : l'attaquant récupère son adresse de retour.
-    const victim = await t.app.inject({ url: `${BASE}/auth/login` });
-    const sso = new URL(String(victim.headers.location));
-    const token = await signSsoToken({ nonce: sso.searchParams.get('nonce')!, audience: t.config.publicOrigin });
-    // L'attaquant ouvre sa propre tentative et rejoue le jeton avec son cookie.
-    const attacker = await t.app.inject({ url: `${BASE}/auth/login` });
-    const attackerFlow = setCookieValue(attacker.headers, FLOW_COOKIE)!;
-    const res = await t.app.inject({
-      url: `${BASE}/auth/callback?state=${sso.searchParams.get('state')}&token=${token}`,
-      headers: { cookie: `${FLOW_COOKIE}=${attackerFlow}` },
+    const { formToken, flow } = await openLoginForm(t);
+    const fields = { form_token: formToken, email: ADMIN_EMAIL, password: ADMIN_PASSWORD };
+    expect((await postLogin(`${FLOW_COOKIE}=${flow}`, fields)).statusCode).toBe(303);
+    expect((await postLogin(`${FLOW_COOKIE}=${flow}`, fields)).statusCode).toBe(403);
+  });
+
+  it('le jeton d’un formulaire ne vaut qu’avec le cookie de flux de la même page', async () => {
+    t = await createTestApp({ now });
+    const victim = await openLoginForm(t);
+    const attacker = await openLoginForm(t);
+    const fields = { form_token: victim.formToken, email: ADMIN_EMAIL, password: ADMIN_PASSWORD };
+    expect((await postLogin(`${FLOW_COOKIE}=${attacker.flow}`, fields)).statusCode).toBe(403);
+  });
+
+  it('corps JSON : refusé, sans session', async () => {
+    t = await createTestApp({ now });
+    const r = await t.app.inject({
+      method: 'POST',
+      url: `${BASE}/auth/login`,
+      headers: { 'content-type': 'application/json', origin: t.config.publicOrigin },
+      payload: JSON.stringify({ email: ADMIN_EMAIL, password: ADMIN_PASSWORD }),
     });
-    expect(res.statusCode).toBe(403);
+    expect(r.statusCode).toBe(403);
+    expect(setCookieValue(r.headers, SESSION_COOKIE)).toBeUndefined();
+  });
+
+  it('déjà connecté : la page de connexion renvoie au tableau de bord', async () => {
+    t = await createTestApp({ now });
+    const { sessionCookie } = await login(t);
+    const r = await t.app.inject({ url: `${BASE}/auth/login`, headers: cookieHeader(sessionCookie!) });
+    expect(r.statusCode).toBe(303);
+    expect(r.headers.location).toBe(`${BASE}/`);
   });
 
   it('régénère l’identifiant de session à chaque connexion', async () => {
     t = await createTestApp({ now });
     const a = await login(t);
     const b = await login(t, { extraCookie: `${SESSION_COOKIE}=${a.sessionCookie}` });
-    expect(b.statusCode).toBe(200);
+    expect(b.statusCode).toBe(303);
     expect(b.sessionCookie).toBeDefined();
     expect(b.sessionCookie).not.toBe(a.sessionCookie);
     expect((await t.app.inject({ url: `${BASE}/api/session`, headers: cookieHeader(a.sessionCookie!) })).statusCode).toBe(404);

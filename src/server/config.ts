@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { parseEd25519PublicKey } from './auth/sso.js';
+import { parsePasswordHash } from './auth/password.js';
 
 /**
  * Configuration : TOUT vient des variables d'environnement, validées au démarrage.
@@ -80,13 +80,11 @@ const rawSchema = z.object({
   PUBLIC_BASE_URL: z.url(),
   ADMIN_PATH_PREFIX: z.string(),
 
-  // Connexion avec le compte PoppyTrip (page de connexion du suivi servie par PoppyTrip).
-  POPPYTRIP_SSO_URL: z.url(),
-  POPPYTRIP_SSO_PUBLIC_KEY: z.string().min(1),
-  ADMIN_ACCOUNT_ID: z
-    .string()
-    .trim()
-    .regex(/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/, 'identifiant de compte (uuid) attendu'),
+  // Seul compte autorisé : e-mail + empreinte argon2id du mot de passe (celle du compte PoppyTrip).
+  ADMIN_EMAIL: z.preprocess((v) => (typeof v === 'string' ? v.trim().toLowerCase() : v), z.email()),
+  ADMIN_PASSWORD_HASH: z.string(),
+  // Lien « Application principale » dans l'en-tête (facultatif).
+  MAIN_APP_URL: z.preprocess(emptyToUndefined, z.url().optional()),
 
   SESSION_SECRET: z.string(),
 
@@ -181,14 +179,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
 
   const basePath = `/${prefix}`;
 
-  // PoppyTrip : son origine est l'émetteur attendu du jeton et le lien « Application principale ».
-  const ssoUrl = new URL(e.POPPYTRIP_SSO_URL);
-  if (production && ssoUrl.protocol !== 'https:') problems.push('POPPYTRIP_SSO_URL : HTTPS obligatoire en production');
-  const ssoPublicKey = e.POPPYTRIP_SSO_PUBLIC_KEY.replace(/\\n/g, '\n');
+  let passwordHash: ReturnType<typeof parsePasswordHash> | null = null;
   try {
-    parseEd25519PublicKey(ssoPublicKey);
-  } catch {
-    problems.push('POPPYTRIP_SSO_PUBLIC_KEY : clé publique Ed25519 (PEM) attendue');
+    passwordHash = parsePasswordHash(e.ADMIN_PASSWORD_HASH);
+  } catch (err) {
+    problems.push(`ADMIN_PASSWORD_HASH : ${(err as Error).message} (voir README, « Connexion »)`);
+  }
+  if (/@(example\.(com|org|net)|[^@]*\.(test|example|invalid))$/.test(e.ADMIN_EMAIL) && production) {
+    problems.push('ADMIN_EMAIL : adresse d’exemple');
   }
 
   const weakSession = isWeakSecret(e.SESSION_SECRET, 32);
@@ -233,7 +231,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
     }
   }
 
-  if (problems.length > 0 || !readonlyDb || !appDb) throw new ConfigError(problems);
+  if (problems.length > 0 || !readonlyDb || !appDb || !passwordHash) throw new ConfigError(problems);
 
   return {
     nodeEnv: e.NODE_ENV,
@@ -246,17 +244,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
     publicHost: publicUrl.host,
     prefix,
     basePath,
-    mainAppUrl: `${ssoUrl.origin}/`,
-    sso: {
-      loginUrl: ssoUrl.toString(),
-      issuer: ssoUrl.origin,
-      audience: publicOrigin,
-      publicKeyPem: ssoPublicKey,
-      /** Adresse de retour à déclarer dans PoppyTrip (MONITORING_SSO_CALLBACK_URL). */
-      callbackUrl: `${publicOrigin}${basePath}/auth/callback`,
-    },
+    mainAppUrl: e.MAIN_APP_URL ?? null,
     admin: {
-      accountId: e.ADMIN_ACCOUNT_ID.toLowerCase(),
+      email: e.ADMIN_EMAIL,
+      passwordHash,
     },
     sessionSecret: e.SESSION_SECRET,
     db: {

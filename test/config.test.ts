@@ -1,9 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { ConfigError, isWeakSecret, loadConfig } from '../src/server/config.js';
-import { generateKeyPairSync } from 'node:crypto';
-import { TEST_ORIGIN, TEST_PREFIX, testEnv } from './helpers/app.js';
-import { ADMIN_ACCOUNT_ID } from './helpers/mockSso.js';
+import { ADMIN_EMAIL, TEST_PREFIX, testEnv, testPasswordHash } from './helpers/app.js';
 
 const strongSecret = () => randomBytes(48).toString('base64');
 
@@ -21,11 +19,10 @@ describe('configuration', () => {
   it('accepte une configuration complète', () => {
     const c = loadConfig(testEnv());
     expect(c.basePath).toBe(`/${TEST_PREFIX}`);
-    expect(c.admin.accountId).toBe(ADMIN_ACCOUNT_ID);
-    expect(c.sso.issuer).toBe('https://app.example.test');
-    expect(c.sso.audience).toBe(TEST_ORIGIN);
-    expect(c.sso.callbackUrl).toBe(`${TEST_ORIGIN}/${TEST_PREFIX}/auth/callback`);
-    expect(c.mainAppUrl).toBe('https://app.example.test/');
+    expect(c.admin.email).toBe(ADMIN_EMAIL);
+    expect(c.admin.passwordHash.memory).toBe(19_456);
+    expect(c.mainAppUrl).toBeNull();
+    expect(loadConfig(testEnv({ MAIN_APP_URL: 'https://app.example.test/' })).mainAppUrl).toBe('https://app.example.test/');
     expect(c.anthropic.adminKey).toBeNull();
     expect(c.limits.dbSizeBytes).toBeNull();
   });
@@ -33,9 +30,8 @@ describe('configuration', () => {
   it.each([
     'PUBLIC_BASE_URL',
     'ADMIN_PATH_PREFIX',
-    'POPPYTRIP_SSO_URL',
-    'POPPYTRIP_SSO_PUBLIC_KEY',
-    'ADMIN_ACCOUNT_ID',
+    'ADMIN_EMAIL',
+    'ADMIN_PASSWORD_HASH',
     'SESSION_SECRET',
     'DATABASE_URL_READONLY',
     'DATABASE_URL_APP',
@@ -72,18 +68,21 @@ describe('configuration', () => {
     }
   });
 
-  it('exige une vraie clé publique Ed25519 de PoppyTrip et un identifiant de compte', () => {
-    const rsa = generateKeyPairSync('rsa', { modulusLength: 2048 }).publicKey.export({ type: 'spki', format: 'pem' }).toString();
-    const ed = generateKeyPairSync('ed25519').privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
-    for (const key of ['pas-une-cle', rsa, ed]) {
-      expect(problems(testEnv({ POPPYTRIP_SSO_PUBLIC_KEY: key })).join()).toContain('POPPYTRIP_SSO_PUBLIC_KEY');
+  it('exige une empreinte argon2id de mot de passe aux paramètres suffisants, jamais un mot de passe en clair', () => {
+    const ok = testPasswordHash('peu-importe-ici');
+    const weak = ok.replace('m=19456,t=2', 'm=4096,t=1');
+    const argon2i = ok.replace('$argon2id$', '$argon2i$');
+    const bcrypt = ['$2b$12$', 'a'.repeat(53)].join('');
+    for (const value of ['mot-de-passe-en-clair', weak, argon2i, bcrypt]) {
+      const p = problems(testEnv({ ADMIN_PASSWORD_HASH: value })).join();
+      expect(p).toContain('ADMIN_PASSWORD_HASH');
+      expect(p).not.toContain(value);
     }
-    expect(problems(testEnv({ ADMIN_ACCOUNT_ID: 'admin@example.com' })).join()).toContain('ADMIN_ACCOUNT_ID');
   });
 
-  it('exige HTTPS pour PoppyTrip en production', () => {
-    const env = testEnv({ NODE_ENV: 'production', POPPYTRIP_SSO_URL: 'http://app.example.test/api/monitoring/sso' });
-    expect(problems(env).join()).toContain('POPPYTRIP_SSO_URL');
+  it('exige une adresse e-mail valide et refuse une adresse d’exemple en production', () => {
+    expect(problems(testEnv({ ADMIN_EMAIL: 'pas-une-adresse' })).join()).toContain('ADMIN_EMAIL');
+    expect(problems(testEnv({ NODE_ENV: 'production' })).join()).toContain('ADMIN_EMAIL');
   });
 
   it('refuse les rôles de base inattendus et la DATABASE_URL de PoppyTrip', () => {

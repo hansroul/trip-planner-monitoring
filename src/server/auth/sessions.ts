@@ -25,7 +25,6 @@ export interface Session {
 
 export interface LoginFlow {
   state: string;
-  nonce: string;
 }
 
 export const randomToken = () => randomBytes(32).toString('base64url');
@@ -105,8 +104,8 @@ export class SessionStore {
   async createFlow(flow: LoginFlow): Promise<string> {
     const id = randomToken();
     await this.pool.query(
-      `INSERT INTO monitoring_app.login_flows (id_hash, state, nonce, expires_at) VALUES ($1, $2, $3, $4)`,
-      [this.hash(id), flow.state, flow.nonce, new Date(this.now().getTime() + LOGIN_FLOW_MS)],
+      `INSERT INTO monitoring_app.login_flows (id_hash, state, expires_at) VALUES ($1, $2, $3)`,
+      [this.hash(id), flow.state, new Date(this.now().getTime() + LOGIN_FLOW_MS)],
     );
     return id;
   }
@@ -114,13 +113,13 @@ export class SessionStore {
   /** Usage unique : le flux est supprimé à la lecture, même s'il a expiré. */
   async consumeFlow(id: string | undefined): Promise<LoginFlow | null> {
     if (!id || !TOKEN_RE.test(id)) return null;
-    const { rows } = await this.pool.query<{ state: string; nonce: string; expires_at: Date }>(
-      'DELETE FROM monitoring_app.login_flows WHERE id_hash = $1 RETURNING state, nonce, expires_at',
+    const { rows } = await this.pool.query<{ state: string; expires_at: Date }>(
+      'DELETE FROM monitoring_app.login_flows WHERE id_hash = $1 RETURNING state, expires_at',
       [this.hash(id)],
     );
     const r = rows[0];
     if (!r || r.expires_at.getTime() <= this.now().getTime()) return null;
-    return { state: r.state, nonce: r.nonce };
+    return { state: r.state };
   }
 
   async prune(): Promise<void> {

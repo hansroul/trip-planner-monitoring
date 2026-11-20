@@ -11,7 +11,6 @@ import {
   TEST_PREFIX,
   type TestApp,
 } from './helpers/app.js';
-import { SSO_URL } from './helpers/mockSso.js';
 
 let t: TestApp;
 
@@ -24,7 +23,7 @@ const stable = (h: Record<string, unknown>) =>
   Object.fromEntries(Object.entries(h).filter(([k]) => !VOLATILE.has(k)).sort(([a], [b]) => a.localeCompare(b)));
 
 describe('visiteur non connecté', () => {
-  it('reçoit une 404 strictement identique partout sauf connexion, retour et santé', async () => {
+  it('reçoit une 404 strictement identique partout sauf connexion et santé', async () => {
     t = await createTestApp();
     const requests: Array<{ method: 'GET' | 'POST' | 'PUT' | 'DELETE' | 'OPTIONS' | 'HEAD'; url: string; headers?: Record<string, string> }> = [
       { method: 'GET', url: '/' },
@@ -72,23 +71,18 @@ describe('visiteur non connecté', () => {
     expect(res.body).toBe('User-agent: *\nDisallow: /\n');
   });
 
-  it('le démarrage de connexion redirige vers la page de connexion de PoppyTrip avec state et nonce aléatoires', async () => {
+  it('la page de connexion porte un jeton de formulaire aléatoire et un cookie de flux strict', async () => {
     t = await createTestApp();
     const res = await t.app.inject({ url: `${BASE}/auth/login` });
-    expect(res.statusCode).toBe(302);
-    const loc = new URL(String(res.headers.location));
-    expect(`${loc.origin}${loc.pathname}`).toBe(SSO_URL);
-    expect(loc.searchParams.get('state')).toMatch(/^[A-Za-z0-9_-]{43}$/);
-    expect(loc.searchParams.get('nonce')).toMatch(/^[A-Za-z0-9_-]{43}$/);
-    expect(loc.searchParams.get('state')).not.toBe(loc.searchParams.get('nonce'));
-    // Aucune adresse de retour transmise : PoppyTrip renvoie toujours vers l'adresse configurée.
-    expect([...loc.searchParams.keys()].sort()).toEqual(['nonce', 'state']);
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toMatch(/name="form_token" value="[A-Za-z0-9_-]{43}"/);
+    expect(res.body).toContain(`action="${BASE}/auth/login"`);
     const flow = setCookieHeader(res.headers, FLOW_COOKIE)!;
     expect(flow).toMatch(/; Max-Age=600/);
     expect(flow).toMatch(/; Path=\//);
     expect(flow).toMatch(/; HttpOnly/);
     expect(flow).toMatch(/; Secure/);
-    expect(flow).toMatch(/; SameSite=Lax/);
+    expect(flow).toMatch(/; SameSite=Strict/);
     expect(flow).not.toMatch(/Domain=/i);
   });
 });
@@ -175,14 +169,18 @@ describe('CSRF', () => {
 });
 
 describe('limitation de débit', () => {
-  it('limite strictement la connexion et son retour', async () => {
+  it('limite strictement la page de connexion et les tentatives', async () => {
     t = await createTestApp({ rateLimits: { globalMax: 1000, authMax: 3, windowMs: 60_000 } });
     const codes = [];
     for (let i = 0; i < 5; i++) codes.push((await t.app.inject({ url: `${BASE}/auth/login` })).statusCode);
-    expect(codes).toEqual([302, 302, 302, 429, 429]);
-    const cbCodes = [];
-    for (let i = 0; i < 4; i++) cbCodes.push((await t.app.inject({ url: `${BASE}/auth/callback?code=x&state=y` })).statusCode);
-    expect(cbCodes.at(-1)).toBe(429);
+    expect(codes).toEqual([200, 200, 200, 429, 429]);
+    const post = await t.app.inject({
+      method: 'POST',
+      url: `${BASE}/auth/login`,
+      headers: { 'content-type': 'application/x-www-form-urlencoded', origin: TEST_ORIGIN },
+      payload: 'email=a%40example.com&password=x',
+    });
+    expect(post.statusCode).toBe(429);
   });
 
   it('limite le reste du site', async () => {

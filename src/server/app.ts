@@ -2,8 +2,9 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 import cookie from '@fastify/cookie';
 import rateLimit from '@fastify/rate-limit';
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
-import type { IdentityProvider } from './auth/sso.js';
-import { SESSION_ABSOLUTE_MS, SESSION_IDLE_MS, SessionStore, type Session } from './auth/sessions.js';
+import { LOGIN_CSS, loginPage } from './auth/loginPage.js';
+import { verifyPassword } from './auth/password.js';
+import { SESSION_ABSOLUTE_MS, SESSION_IDLE_MS, SessionStore, randomToken, type Session } from './auth/sessions.js';
 import type { AppConfig } from './config.js';
 import { writeAudit } from './db/audit.js';
 import type { Pools } from './db/pools.js';
@@ -34,7 +35,6 @@ export const DEFAULT_RATE_LIMITS: RateLimitSettings = { globalMax: 240, authMax:
 export interface AppDeps {
   config: AppConfig;
   pools: Pools;
-  idp: IdentityProvider;
   client: ClientBundle;
   now?: () => Date;
   logStream?: LogStream;
@@ -62,23 +62,17 @@ const sessionCookieOptions = {
   sameSite: 'strict' as const,
   maxAge: SESSION_ABSOLUTE_MS / 1000,
 };
-const flowCookieOptions = { path: '/', secure: true, httpOnly: true, sameSite: 'lax' as const, maxAge: 600 };
-
-function continuePage(target: string): string {
-  // Le cookie de session est SameSite=Strict : on revient sur le site par une navigation
-  // initiée par une page du site (actualisation méta, sans script), pas par une redirection
-  // venue du fournisseur d'identité.
-  return `<!doctype html><html lang="fr"><head><meta charset="utf-8"><meta name="robots" content="noindex"><meta http-equiv="refresh" content="0;url=${target}"><title>Connexion</title></head><body><p><a href="${target}">Continuer</a></p></body></html>`;
-}
+const flowCookieOptions = { path: '/', secure: true, httpOnly: true, sameSite: 'strict' as const, maxAge: 600 };
+const HTML = 'text/html; charset=utf-8';
 
 export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
-  const { config, pools, idp } = deps;
+  const { config, pools } = deps;
   const now = deps.now ?? (() => new Date());
   const limits = deps.rateLimits ?? DEFAULT_RATE_LIMITS;
   const base = config.basePath;
   const loginPath = `${base}/auth/login`;
-  const callbackPath = `${base}/auth/callback`;
-  const publicPaths = new Set(['/healthz', '/robots.txt', loginPath, callbackPath]);
+  const loginCssPath = `${base}/auth/login.css`;
+  const publicPaths = new Set(['/healthz', '/robots.txt', loginPath, loginCssPath]);
   const sessions = new SessionStore(pools.app, config.sessionSecret, now);
   const indexHtml = renderIndex(deps.client.index, base);
 
@@ -122,11 +116,8 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   await app.register(cookie);
 
   // Limitation de débit AVANT le contrôle d'accès (elle couvre donc aussi les 404) : plafond
-  // strict pour le démarrage de connexion et son retour, plafond général pour le reste.
-  const isAuthPath = (req: FastifyRequest) => {
-    const p = req.url.split('?')[0];
-    return p === loginPath || p === callbackPath;
-  };
+  // strict pour la page de connexion (affichage et envoi), plafond général pour le reste.
+  const isAuthPath = (req: FastifyRequest) => req.url.split('?')[0] === loginPath;
   app.addHook(
     'onRequest',
     app.rateLimit({
@@ -137,7 +128,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   );
 
   // Contrôle d'accès global : sans session valide, TOUT répond 404 (sauf santé, robots,
-  // démarrage et retour de connexion).
+  // page de connexion et sa feuille de style).
   app.addHook('onRequest', async (req, reply) => {
     const path = req.url.split('?')[0] ?? '';
     if (publicPaths.has(path)) return;
@@ -170,52 +161,70 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   app.get('/healthz', async (_req, reply) => reply.type(TEXT).send('ok'));
   app.get('/robots.txt', async (_req, reply) => reply.type(TEXT).send('User-agent: *\nDisallow: /\n'));
 
+  app.get(loginCssPath, async (_req, reply) => reply.type('text/css; charset=utf-8').send(LOGIN_CSS));
+
+  // Affiche le formulaire avec un nouveau jeton anti-falsification (usage unique, 10 min).
+  const showLoginForm = async (reply: FastifyReply, status: number, error?: string) => {
+    const formToken = randomToken();
+    const flowId = await sessions.createFlow({ state: formToken });
+    reply.setCookie(FLOW_COOKIE, flowId, flowCookieOptions);
+    return reply.code(status).type(HTML).send(loginPage({ action: loginPath, cssHref: loginCssPath, formToken, error }));
+  };
+
   app.get(loginPath, async (req, reply) => {
     try {
       await sessions.prune();
-      const started = idp.start();
-      const flowId = await sessions.createFlow({ state: started.state, nonce: started.nonce });
-      reply.setCookie(FLOW_COOKIE, flowId, flowCookieOptions);
-      return reply.redirect(started.url.href, 302);
+      // Déjà connecté : directement au tableau de bord.
+      if (await sessions.validate(req.cookies[SESSION_COOKIE], false)) return reply.redirect(`${base}/`, 303);
+      return await showLoginForm(reply, 200);
     } catch (err) {
-      req.log.error({ err: safeError(err) }, 'démarrage de connexion impossible');
+      req.log.error({ err: safeError(err) }, 'page de connexion indisponible');
       return reply.code(503).type(TEXT).send('Service indisponible');
     }
   });
 
-  app.get(callbackPath, async (req, reply) => {
-    const refuse = async (reason: string, details: Record<string, unknown> = {}) => {
-      req.log.warn({ reason }, 'connexion refusée');
-      await writeAudit(pools.app, { event: 'login', outcome: 'refused', ip: req.ip, details: { reason, ...details } }).catch(
-        (e: unknown) => req.log.error({ err: safeError(e) }, 'audit impossible'),
-      );
-      return reply.code(403).type(TEXT).send('Connexion refusée.');
-    };
+  // Envoi du formulaire : e-mail + mot de passe vérifiés ici (empreinte argon2id configurée).
+  await app.register(async (scoped) => {
+    scoped.addContentTypeParser(
+      'application/x-www-form-urlencoded',
+      { parseAs: 'string', bodyLimit: 4096 },
+      (_req, body, done) => done(null, Object.fromEntries(new URLSearchParams(String(body)))),
+    );
 
-    const flow = await sessions.consumeFlow(req.cookies[FLOW_COOKIE]);
-    reply.clearCookie(FLOW_COOKIE, { path: '/', secure: true, httpOnly: true, sameSite: 'lax' });
-    if (!flow) return refuse('flow_invalid');
+    scoped.post(loginPath, async (req, reply) => {
+      const refuse = async (reason: string, status: number, message: string) => {
+        req.log.warn({ reason }, 'connexion refusée');
+        await writeAudit(pools.app, { event: 'login', outcome: 'refused', ip: req.ip, details: { reason } }).catch(
+          (e: unknown) => req.log.error({ err: safeError(e) }, 'audit impossible'),
+        );
+        return showLoginForm(reply, status, message);
+      };
 
-    // Retour de PoppyTrip : ?state=…&token=… (jeton signé, 60 s, lié au nonce de ce flux).
-    const q = req.query as Record<string, unknown>;
-    if (typeof q.state !== 'string' || !safeEqual(q.state, flow.state)) return refuse('state_invalid');
-    if (typeof q.token !== 'string') return refuse('token_missing');
-    let accountId: string;
-    try {
-      accountId = await idp.finish(q.token, flow.nonce);
-    } catch (err) {
-      const e = safeError(err);
-      return refuse('token_invalid', { error: e.name, ...(e.code ? { code: e.code } : {}) });
-    }
-    // Défense en profondeur : PoppyTrip ne signe que pour ce compte, et ce site le revérifie.
-    if (!safeEqual(accountId.toLowerCase(), config.admin.accountId)) return refuse('account_mismatch');
+      const flow = await sessions.consumeFlow(req.cookies[FLOW_COOKIE]);
+      reply.clearCookie(FLOW_COOKIE, { path: '/', secure: true, httpOnly: true, sameSite: 'strict' });
+      const site = req.headers['sec-fetch-site'];
+      if (req.headers.origin !== config.publicOrigin || (site !== undefined && site !== 'same-origin')) {
+        return refuse('origin_invalid', 403, 'Requête refusée. Recharge la page et réessaie.');
+      }
+      const form = (req.body ?? {}) as Record<string, unknown>;
+      if (!flow || typeof form.form_token !== 'string' || !safeEqual(form.form_token, flow.state)) {
+        return refuse('form_expired', 403, 'La page de connexion a expiré. Réessaie.');
+      }
 
-    // Nouvel identifiant de session à chaque connexion : l'éventuelle ancienne est détruite.
-    await sessions.destroy(req.cookies[SESSION_COOKIE]);
-    const { id } = await sessions.create();
-    reply.setCookie(SESSION_COOKIE, id, sessionCookieOptions);
-    await writeAudit(pools.app, { event: 'login', outcome: 'success', ip: req.ip });
-    return reply.type('text/html; charset=utf-8').send(continuePage(`${base}/`));
+      const email = typeof form.email === 'string' ? form.email.trim().toLowerCase() : '';
+      const password = typeof form.password === 'string' ? form.password : '';
+      // Le mot de passe est toujours vérifié, même si l'e-mail est faux : même durée de réponse.
+      const passwordOk = await verifyPassword(config.admin.passwordHash, password);
+      const emailOk = safeEqual(email, config.admin.email);
+      if (!(emailOk && passwordOk)) return refuse('credentials', 401, 'Identifiants refusés.');
+
+      // Nouvel identifiant de session à chaque connexion : l'éventuelle ancienne est détruite.
+      await sessions.destroy(req.cookies[SESSION_COOKIE]);
+      const { id } = await sessions.create();
+      reply.setCookie(SESSION_COOKIE, id, sessionCookieOptions);
+      await writeAudit(pools.app, { event: 'login', outcome: 'success', ip: req.ip });
+      return reply.redirect(`${base}/`, 303);
+    });
   });
 
   // --- Routes protégées (session déjà vérifiée par le crochet) ----------------------------
