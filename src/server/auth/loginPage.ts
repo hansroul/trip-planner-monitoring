@@ -14,7 +14,6 @@ export function loginPage(opts: { action: string; cssHref: string; formToken: st
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
-<meta name="referrer" content="no-referrer">
 <title>Connexion · Suivi PoppyTrip</title>
 <link rel="stylesheet" href="${escapeHtml(opts.cssHref)}">
 </head>

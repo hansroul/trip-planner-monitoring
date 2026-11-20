@@ -168,6 +168,10 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     const formToken = randomToken();
     const flowId = await sessions.createFlow({ state: formToken });
     reply.setCookie(FLOW_COOKIE, flowId, flowCookieOptions);
+    // Avec « no-referrer », le navigateur envoie « Origin: null » pour l'envoi du formulaire et la
+    // vérification d'origine échouerait : « same-origin » garde la vraie origine pour ce site et
+    // n'envoie toujours rien ailleurs.
+    reply.header('Referrer-Policy', 'same-origin');
     return reply.code(status).type(HTML).send(loginPage({ action: loginPath, cssHref: loginCssPath, formToken, error }));
   };
 

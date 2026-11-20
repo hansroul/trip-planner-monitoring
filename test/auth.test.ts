@@ -53,6 +53,9 @@ describe('connexion par e-mail et mot de passe', () => {
     expect(page.body).toContain('name="form_token"');
     expect(page.body).toContain('autocomplete="current-password"');
     expect(page.body).not.toMatch(/<script|style=/i);
+    // Un navigateur envoie « Origin: null » pour un formulaire soumis sous « no-referrer ».
+    expect(page.headers['referrer-policy']).toBe('same-origin');
+    expect(page.body).not.toContain('no-referrer');
     expect(setCookieHeader(page.headers, FLOW_COOKIE)).toMatch(/HttpOnly/i);
     expect(setCookieHeader(page.headers, FLOW_COOKIE)).toMatch(/SameSite=Strict/i);
     const css = await t.app.inject({ url: `${BASE}/auth/login.css` });
