@@ -4,21 +4,17 @@ import { addDays } from '../src/shared/calc.js';
 import { registerApi } from '../src/server/routes/api.js';
 import { parsePeriod } from '../src/server/services/period.js';
 import { TtlCache } from '../src/server/services/cache.js';
-import { BASE, cookieHeader, createTestApp, login, TEST_ADMIN_EMAIL, type TestApp } from './helpers/app.js';
-import { startMockOidc, type MockOidc } from './helpers/mockOidc.js';
+import { BASE, cookieHeader, createTestApp, login, type TestApp } from './helpers/app.js';
 
-let mock: MockOidc;
 let t: TestApp;
 let sid: string;
 
 beforeAll(async () => {
-  mock = await startMockOidc();
-  t = await createTestApp(mock, { registerApi, env: { USD_TO_EUR_RATE: '0.9' } });
-  sid = (await login(t, mock)).sessionCookie!;
+  t = await createTestApp({ registerApi, env: { USD_TO_EUR_RATE: '0.9' } });
+  sid = (await login(t)).sessionCookie!;
 });
 afterAll(async () => {
   await t.close();
-  await mock.close();
 });
 
 const get = (url: string) => t.app.inject({ url: `${BASE}${url}`, headers: cookieHeader(sid) });
@@ -96,9 +92,8 @@ describe('API du tableau de bord', () => {
     ];
     for (const body of bodies) {
       expect(body).not.toMatch(EMAIL_RE);
-      expect(body).not.toContain(TEST_ADMIN_EMAIL);
       expect(body).not.toContain(t.config.sessionSecret);
-      expect(body).not.toContain(t.config.oidc.clientSecret);
+      expect(body).not.toContain('PUBLIC KEY');
       expect(body).not.toContain('dev-only-');
       expect(body).not.toMatch(/sk-ant-/);
     }

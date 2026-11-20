@@ -100,7 +100,7 @@ describe('connexions', () => {
       rejectUnauthorized: true,
       servername: 'db.example.test',
     });
-    const c = loadConfig(testEnv('https://login.example.test/v2.0'));
+    const c = loadConfig(testEnv());
     const cfg = poolConfig(
       { ...c.db.readonly, url: 'postgres://monitoring_reader:x@db.example.test:5432/app?sslmode=disable', host: 'db.example.test', privateNetwork: false },
       { readonly: true, statementTimeoutMs: 5000, max: 2, applicationName: 't' },
@@ -115,7 +115,7 @@ describe('base de développement du contrat', () => {
   let pool: pg.Pool;
   let repo: ReadRepository;
   beforeAll(() => {
-    const c = loadConfig(testEnv('https://login.example.test/v2.0'));
+    const c = loadConfig(testEnv());
     pool = createPool(c.db.readonly, { readonly: true, statementTimeoutMs: 5000, max: 2, applicationName: 'test' });
     repo = new ReadRepository(pool);
   });

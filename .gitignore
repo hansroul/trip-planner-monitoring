@@ -15,3 +15,8 @@ coverage/
 Thumbs.db
 .vscode/
 .idea/
+
+# Clés de connexion générées localement (README, section 3) : jamais versionnées
+*.key
+*.pem
+suivi-sso.*

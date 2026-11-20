@@ -6,7 +6,7 @@ export interface LogStream {
 /**
  * Journalisation : jamais de jeton, de cookie, de code d'autorisation, de state, ni de clé.
  * - Les en-têtes sensibles sont masqués (redact).
- * - L'URL est journalisée SANS sa chaîne de requête (le retour OIDC y porte code et state) et
+ * - L'URL est journalisée SANS sa chaîne de requête (le retour de PoppyTrip y porte le jeton et le state) et
  *   le préfixe d'administration est remplacé par « /[admin] ».
  */
 export const REDACTED = '[masqué]';

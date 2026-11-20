@@ -1,11 +1,11 @@
+import { createHash, timingSafeEqual } from 'node:crypto';
 import cookie from '@fastify/cookie';
 import rateLimit from '@fastify/rate-limit';
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
-import { authorizeClaims } from './auth/authorize.js';
-import type { OidcProvider } from './auth/oidc.js';
+import type { IdentityProvider } from './auth/sso.js';
 import { SESSION_ABSOLUTE_MS, SESSION_IDLE_MS, SessionStore, type Session } from './auth/sessions.js';
 import type { AppConfig } from './config.js';
-import { maskEmail, writeAudit } from './db/audit.js';
+import { writeAudit } from './db/audit.js';
 import type { Pools } from './db/pools.js';
 import { registerSecurityHeaders } from './http/security.js';
 import { renderIndex, type ClientBundle } from './http/static.js';
@@ -34,7 +34,7 @@ export const DEFAULT_RATE_LIMITS: RateLimitSettings = { globalMax: 240, authMax:
 export interface AppDeps {
   config: AppConfig;
   pools: Pools;
-  oidc: OidcProvider;
+  idp: IdentityProvider;
   client: ClientBundle;
   now?: () => Date;
   logStream?: LogStream;
@@ -72,7 +72,7 @@ function continuePage(target: string): string {
 }
 
 export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
-  const { config, pools, oidc } = deps;
+  const { config, pools, idp } = deps;
   const now = deps.now ?? (() => new Date());
   const limits = deps.rateLimits ?? DEFAULT_RATE_LIMITS;
   const base = config.basePath;
@@ -173,8 +173,8 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   app.get(loginPath, async (req, reply) => {
     try {
       await sessions.prune();
-      const started = await oidc.start();
-      const flowId = await sessions.createFlow(started);
+      const started = idp.start();
+      const flowId = await sessions.createFlow({ state: started.state, nonce: started.nonce });
       reply.setCookie(FLOW_COOKIE, flowId, flowCookieOptions);
       return reply.redirect(started.url.href, 302);
     } catch (err) {
@@ -196,32 +196,25 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     reply.clearCookie(FLOW_COOKIE, { path: '/', secure: true, httpOnly: true, sameSite: 'lax' });
     if (!flow) return refuse('flow_invalid');
 
-    const callbackUrl = new URL(config.oidc.redirectUri);
-    callbackUrl.search = new URL(req.url, config.publicOrigin).search;
-    let claims: Record<string, unknown>;
+    // Retour de PoppyTrip : ?state=…&token=… (jeton signé, 60 s, lié au nonce de ce flux).
+    const q = req.query as Record<string, unknown>;
+    if (typeof q.state !== 'string' || !safeEqual(q.state, flow.state)) return refuse('state_invalid');
+    if (typeof q.token !== 'string') return refuse('token_missing');
+    let accountId: string;
     try {
-      claims = await oidc.finish(callbackUrl, flow);
+      accountId = await idp.finish(q.token, flow.nonce);
     } catch (err) {
       const e = safeError(err);
       return refuse('token_invalid', { error: e.name, ...(e.code ? { code: e.code } : {}) });
     }
-
-    const result = authorizeClaims(claims, config.admin);
-    if (!result.ok) return refuse(result.reason, { email: maskEmail(result.email) });
+    // Défense en profondeur : PoppyTrip ne signe que pour ce compte, et ce site le revérifie.
+    if (!safeEqual(accountId.toLowerCase(), config.admin.accountId)) return refuse('account_mismatch');
 
     // Nouvel identifiant de session à chaque connexion : l'éventuelle ancienne est détruite.
     await sessions.destroy(req.cookies[SESSION_COOKIE]);
-    if (!result.subConfigured) {
-      req.log.warn(`renseigne ADMIN_OIDC_SUB=${result.sub} dans la configuration`);
-    }
-    const { id } = await sessions.create({ subNotice: result.subConfigured ? null : result.sub });
+    const { id } = await sessions.create();
     reply.setCookie(SESSION_COOKIE, id, sessionCookieOptions);
-    await writeAudit(pools.app, {
-      event: 'login',
-      outcome: 'success',
-      ip: req.ip,
-      details: { sub_configured: result.subConfigured },
-    });
+    await writeAudit(pools.app, { event: 'login', outcome: 'success', ip: req.ip });
     return reply.type('text/html; charset=utf-8').send(continuePage(`${base}/`));
   });
 
@@ -235,12 +228,10 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
 
   app.get(`${base}/api/session`, async (req) => {
     const s = req.session!;
-    const subNotice = s.subNotice ? await sessions.takeSubNotice(s.idHash) : null;
     return {
       csrfToken: s.csrfToken,
       absoluteExpiresAt: s.absoluteExpiresAt.toISOString(),
       idleTimeoutSeconds: SESSION_IDLE_MS / 1000,
-      subNotice,
       mainAppUrl: config.mainAppUrl,
       timezone: config.timezone,
     };
@@ -266,6 +257,12 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   });
 
   return app;
+}
+
+function safeEqual(a: string, b: string): boolean {
+  const ha = createHash('sha256').update(a).digest();
+  const hb = createHash('sha256').update(b).digest();
+  return timingSafeEqual(ha, hb);
 }
 
 function csrfOk(req: FastifyRequest, session: Session, publicOrigin: string): boolean {

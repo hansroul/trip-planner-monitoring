@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { buildApp } from './app.js';
-import { createOidcProvider } from './auth/oidc.js';
+import { createSsoProvider } from './auth/sso.js';
 import { ConfigError, loadConfig } from './config.js';
 import { runMigrations } from './db/migrate.js';
 import { createPools } from './db/pools.js';
@@ -22,14 +22,11 @@ async function main(): Promise<void> {
   const pools = createPools(config.db);
   await runMigrations(pools.app);
   const client = await loadClientBundle(path.resolve('dist/client'));
-  const oidc = createOidcProvider(config.oidc);
-  const app = await buildApp({ config, pools, oidc, client, registerApi });
+  const idp = createSsoProvider(config.sso);
+  const app = await buildApp({ config, pools, idp, client, registerApi });
 
-  if (!config.admin.sub) {
-    app.log.warn(
-      'ADMIN_OIDC_SUB n’est pas défini : la connexion n’est vérifiée que par l’adresse. Connecte-toi une fois puis renseigne ADMIN_OIDC_SUB.',
-    );
-  }
+  // Adresse de retour à déclarer dans PoppyTrip (MONITORING_SSO_CALLBACK_URL) : sans le préfixe.
+  app.log.info('Connexion via PoppyTrip : retour attendu sur PUBLIC_BASE_URL/<préfixe>/auth/callback');
 
   const stopJobs = startBackgroundJobs({ config, pools, log: app.log });
 

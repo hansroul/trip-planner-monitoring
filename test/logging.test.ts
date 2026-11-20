@@ -1,37 +1,27 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { REDACTED, redactObject, safeError, stripUrl } from '../src/server/logger.js';
 import { BASE, cookieHeader, createTestApp, login, TEST_PREFIX } from './helpers/app.js';
-import { startMockOidc, type MockOidc } from './helpers/mockOidc.js';
-
-let mock: MockOidc;
-beforeAll(async () => {
-  mock = await startMockOidc();
-});
-afterAll(async () => {
-  await mock.close();
-});
 
 describe('journaux', () => {
-  it('ne contiennent ni cookie, ni code, ni state, ni jeton CSRF, ni préfixe', async () => {
+  it('ne contiennent ni cookie, ni jeton, ni state, ni jeton CSRF, ni préfixe', async () => {
     const lines: string[] = [];
-    const t = await createTestApp(mock, {
+    const t = await createTestApp({
       env: { LOG_LEVEL: 'trace' },
       logStream: { write: (l: string) => void lines.push(l) },
     });
     try {
-      const { sessionCookie } = await login(t, mock);
+      const { sessionCookie } = await login(t);
       const s = await t.app.inject({ url: `${BASE}/api/session`, headers: cookieHeader(sessionCookie!) });
       const csrf = s.json().csrfToken as string;
-      await t.app.inject({ url: `${BASE}/auth/callback?code=CODE-SECRET-123&state=STATE-SECRET-456` });
+      await t.app.inject({ url: `${BASE}/auth/callback?token=TOKEN-SECRET-123&state=STATE-SECRET-456` });
       const log = lines.join('\n');
       expect(log.length).toBeGreaterThan(0);
       expect(log).not.toContain(sessionCookie!);
       expect(log).not.toContain(csrf);
-      expect(log).not.toContain('CODE-SECRET-123');
+      expect(log).not.toContain('TOKEN-SECRET-123');
       expect(log).not.toContain('STATE-SECRET-456');
       expect(log).not.toContain(TEST_PREFIX);
       expect(log).not.toContain(t.config.sessionSecret);
-      expect(log).not.toContain(t.config.oidc.clientSecret);
       expect(log).toContain('/[admin]/auth/callback');
     } finally {
       await t.close();

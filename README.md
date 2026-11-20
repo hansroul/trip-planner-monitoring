@@ -1,9 +1,9 @@
 # Suivi PoppyTrip
 
 Site de suivi (monitoring) **privé** de PoppyTrip, séparé de l’application principale, avec un
-**seul utilisateur autorisé**. Il lit la base PostgreSQL de PoppyTrip **uniquement** à travers
-12 vues SQL en lecture seule (`public.monitoring_*`, voir `sql/contract.sql`) et n’affiche aucune
-donnée personnelle.
+**seul utilisateur autorisé** : ton compte PoppyTrip. Il lit la base PostgreSQL de PoppyTrip
+**uniquement** à travers 12 vues SQL en lecture seule (`public.monitoring_*`, voir
+`sql/contract.sql`) et n’affiche aucune donnée personnelle.
 
 - TypeScript partout ; serveur Fastify qui sert aussi le front React (Vite) construit.
 - PostgreSQL avec `pg` et du SQL paramétré (pas d’ORM) ; validation Zod ; tests Vitest.
@@ -14,7 +14,7 @@ donnée personnelle.
 
 1. [Fonctionnement et sécurité](#1-fonctionnement-et-sécurité)
 2. [Installation locale](#2-installation-locale)
-3. [Application Microsoft Entra (comptes personnels)](#3-application-microsoft-entra-comptes-personnels)
+3. [Connexion avec le compte PoppyTrip](#3-connexion-avec-le-compte-poppytrip)
 4. [Génération des secrets](#4-génération-des-secrets)
 5. [Variables d’environnement](#5-variables-denvironnement)
 6. [Déploiement sur Railway](#6-déploiement-sur-railway)
@@ -29,19 +29,20 @@ donnée personnelle.
   `https://<domaine>/<ADMIN_PATH_PREFIX>/auth/login` (à garder en favori).
 - **Sans session, toutes les routes répondent par la même 404**, sauf `/healthz` (« ok »),
   `/robots.txt` (tout interdit), le démarrage de la connexion et son retour.
-- Connexion **OpenID Connect** avec un compte Microsoft personnel : code d’autorisation + PKCE,
-  `state` et `nonce` vérifiés, signature et revendications du jeton vérifiées (`openid-client`).
-  Accès accordé seulement si l’adresse du jeton est exactement `ADMIN_EMAIL` **et**, une fois
-  renseigné, si l’identifiant stable (`sub`) vaut `ADMIN_OIDC_SUB`.
+- Connexion avec **ton compte PoppyTrip** : PoppyTrip redemande l’e-mail et le mot de passe sur une
+  page dédiée, vérifie qu’il s’agit du compte autorisé, puis renvoie ici avec un jeton signé Ed25519
+  valable 60 s et lié à la tentative (`state` + `nonce`). Ce site vérifie la signature, l’émetteur,
+  l’audience, le type, l’expiration et l’identifiant du compte (`ADMIN_ACCOUNT_ID`) avec la
+  bibliothèque `jose`. Il ne lit jamais la table `users` et ne reçoit aucune donnée personnelle.
 - Session côté serveur (table `monitoring_app.sessions`, seul un HMAC de l’identifiant est stocké),
   cookie `__Host-` `Secure` `HttpOnly` `SameSite=Strict`, 8 h maximum, 30 min d’inactivité.
 - Modifications (recharges de crédit, déconnexion) : vérification d’origine **et** jeton CSRF.
 - En-têtes : CSP stricte (aucun script ni style en ligne), HSTS, `X-Frame-Options: DENY`,
   `Referrer-Policy: no-referrer`, `Permissions-Policy` restrictive, `noindex`, `nosniff`,
   `Cache-Control: no-store`, aucun CORS.
-- Limitation de débit stricte sur la connexion (10 par 15 min et par adresse IP) et générale sur le
-  reste ; journal d’audit (connexions, déconnexions, recharges, alertes) sans secret ni adresse
-  complète d’un tiers.
+- Limitation de débit stricte sur la connexion (10 par 15 min et par adresse IP, et 5 essais de mot
+  de passe par 15 min côté PoppyTrip) et générale sur le reste ; journal d’audit (connexions,
+  déconnexions, recharges, alertes) sans secret.
 - Deux connexions PostgreSQL : `monitoring_reader` (lecture seule forcée à chaque connexion, TLS
   vérifié hors réseau privé, délai de 5 s) et `monitoring_app_rw` (schéma `monitoring_app` :
   sessions, recharges, alertes, audit ; migrations SQL appliquées au démarrage).
@@ -53,14 +54,14 @@ Prérequis : Node.js 24 (`.nvmrc`), Docker (pour la base de développement).
 ```sh
 npm install                      # installe aussi le hook de pré-commit (.githooks)
 docker compose up -d db          # PostgreSQL local : 12 vues du contrat, 2 rôles, FAUSSES données sur 120 jours
-cp .env.example .env             # puis compléter .env (voir sections 3 à 5)
+cp .env.example .env             # puis compléter .env (sections 3 à 5)
 npm run dev                      # build du front en continu + serveur relancé à chaque modification
 ```
 
-Ouvrir ensuite `http://localhost:3000/<ADMIN_PATH_PREFIX>/auth/login`. En local, ajouter
-`http://localhost:3000/<ADMIN_PATH_PREFIX>/auth/callback` comme URI de redirection dans
-l’application Entra (Microsoft accepte `http://localhost`). Les cookies `Secure` fonctionnent sur
-`http://localhost` dans les navigateurs récents.
+Ouvrir ensuite `http://localhost:3000/<ADMIN_PATH_PREFIX>/auth/login`. La connexion passe par une
+instance **locale** de PoppyTrip configurée comme en section 3, avec
+`MONITORING_SSO_CALLBACK_URL=http://localhost:3000/<ADMIN_PATH_PREFIX>/auth/callback`. Les cookies
+`Secure` fonctionnent sur `http://localhost` dans les navigateurs récents.
 
 - Les fausses données sont recréées avec `docker compose down -v && docker compose up -d db`, ou
   sur une autre instance locale avec `DEV_PG_ADMIN_URL=postgres://… npm run db:dev:init -- --recreate`.
@@ -75,31 +76,45 @@ npm run typecheck
 npm run check:secrets
 ```
 
-Les tests recréent une base `monitoring_test` (et `monitoring_test_empty`) sur l’instance locale.
+Les tests recréent une base `monitoring_test` (et `monitoring_test_empty`) sur l’instance locale et
+simulent PoppyTrip (clés Ed25519 générées pour le test).
 
-## 3. Application Microsoft Entra (comptes personnels)
+## 3. Connexion avec le compte PoppyTrip
 
-1. Portail <https://entra.microsoft.com> → **Identité** → **Applications** → **Inscriptions
-   d’applications** → **Nouvelle inscription**.
-2. Nom : par exemple « Suivi PoppyTrip ». Types de comptes : **Comptes Microsoft personnels
-   uniquement**.
-3. URI de redirection : plateforme **Web**, valeur **exactement** égale à `OIDC_REDIRECT_URI`
-   (`https://<domaine>/<ADMIN_PATH_PREFIX>/auth/callback`). Ajouter aussi l’URI locale si besoin.
-4. Ne **pas** cocher « Jetons d’ID » ni « Jetons d’accès » (flux implicite inutile : le site utilise
-   le flux par code avec PKCE).
-5. **Certificats et secrets** → **Nouveau secret client** → copier la **valeur** dans
-   `OIDC_CLIENT_SECRET` (noter la date d’expiration et prévoir son renouvellement).
-6. **Vue d’ensemble** → copier l’**ID d’application (client)** dans `OIDC_CLIENT_ID`.
-7. **Autorisations d’API** : `openid`, `email`, `profile` (Microsoft Graph, déléguées) suffisent.
-8. `OIDC_ISSUER` : émetteur publié par l’autorité « consumers » (vérifié le 19/11/2026 dans le
-   document de découverte `https://login.microsoftonline.com/consumers/v2.0/.well-known/openid-configuration`) :
-   `https://login.microsoftonline.com/9188040d-6c67-4c5b-b112-36a304b66dad/v2.0`.
+1. Générer la paire de clés (une fois, sur ton poste ; ne jamais versionner la clé privée) :
+
+   ```sh
+   openssl genpkey -algorithm ed25519 -out suivi-sso.key        # clé PRIVÉE : PoppyTrip uniquement
+   openssl pkey -in suivi-sso.key -pubout -out suivi-sso.pub    # clé PUBLIQUE : site de suivi
+   ```
+
+   Dans Railway, coller le contenu PEM tel quel (ou sur une ligne avec `\n`), puis supprimer les
+   fichiers locaux ou les ranger dans le gestionnaire de secrets.
+2. Trouver l’identifiant de ton compte PoppyTrip (avec le compte principal de la base) :
+   `SELECT id FROM users WHERE email = '<ton adresse>';`
+3. **Variables de PoppyTrip** (service principal) :
+   - `MONITORING_SSO_PRIVATE_KEY` : contenu de `suivi-sso.key` ;
+   - `MONITORING_SSO_CALLBACK_URL` : `https://<domaine du suivi>/<ADMIN_PATH_PREFIX>/auth/callback` ;
+   - `MONITORING_ADMIN_USER_ID` : l’identifiant de l’étape 2.
+4. **Variables du site de suivi** :
+   - `POPPYTRIP_SSO_URL` : `https://<domaine de PoppyTrip>/api/monitoring/sso` ;
+   - `POPPYTRIP_SSO_PUBLIC_KEY` : contenu de `suivi-sso.pub` (une clé privée est refusée) ;
+   - `ADMIN_ACCOUNT_ID` : le même identifiant.
+
+Déroulement : `/<préfixe>/auth/login` → page « Connexion au suivi » de PoppyTrip (e-mail + mot de
+passe, même si tu es déjà connecté à PoppyTrip) → retour automatique sur le suivi. Un autre compte ou
+un mauvais mot de passe reçoit le même « Identifiants refusés ».
+
+Sécurité : l’accès au suivi vaut celui de ton mot de passe PoppyTrip (PoppyTrip n’a pas de double
+authentification) ; choisis un mot de passe long et unique. Pour changer de clés : générer une
+nouvelle paire et mettre à jour les deux services en même temps.
 
 ## 4. Génération des secrets
 
 ```sh
 openssl rand -base64 48     # SESSION_SECRET (≥ 32 octets)
 openssl rand -hex 24        # ADMIN_PATH_PREFIX (segment non devinable)
+openssl genpkey -algorithm ed25519 -out suivi-sso.key   # clés de connexion (section 3)
 ```
 
 Ne jamais réutiliser une valeur entre environnements ; ne jamais la coller dans un fichier versionné,
@@ -110,38 +125,42 @@ un ticket ou un message.
 Toutes sont lues au démarrage et validées ; le serveur **refuse de démarrer** si une variable
 obligatoire manque ou est faible. `.env.example` ne contient que des valeurs fictives.
 
-| Variable | Obligatoire | Description |
+**Obligatoires (8)**
+
+| Variable | Description |
+|---|---|
+| `PUBLIC_BASE_URL` | Origine publique, sans chemin (HTTPS en production). |
+| `ADMIN_PATH_PREFIX` | Segment aléatoire (24 à 128 car. `[A-Za-z0-9_-]`) sous lequel tout est monté. |
+| `POPPYTRIP_SSO_URL` | Page de connexion du suivi dans PoppyTrip ; son origine est l’émetteur attendu du jeton et le lien « Application principale ». |
+| `POPPYTRIP_SSO_PUBLIC_KEY` | Clé publique Ed25519 (PEM) de PoppyTrip. |
+| `ADMIN_ACCOUNT_ID` | Identifiant (`users.id`) de ton compte PoppyTrip, le seul autorisé. |
+| `SESSION_SECRET` | ≥ 32 octets aléatoires. |
+| `DATABASE_URL_READONLY` | Rôle `monitoring_reader` (jamais la `DATABASE_URL` de PoppyTrip). |
+| `DATABASE_URL_APP` | Rôle `monitoring_app_rw`. |
+
+**Facultatives**
+
+| Variable | Défaut | Description |
 |---|---|---|
-| `NODE_ENV` | non (`production`) | `production`, `development` ou `test`. En production : HTTPS exigé. |
-| `PORT` / `HOST` | non (`3000` / `0.0.0.0`) | Écoute du serveur (Railway fournit `PORT`). |
-| `LOG_LEVEL` | non (`info`) | Niveau de journalisation. |
-| `TRUST_PROXY_HOPS` | non (`0`) | Mandataires de confiance devant le service (**Railway : 1**). |
-| `PUBLIC_BASE_URL` | oui | Origine publique, sans chemin (HTTPS en production). |
-| `ADMIN_PATH_PREFIX` | oui | Segment aléatoire (24 à 128 car. `[A-Za-z0-9_-]`) sous lequel tout est monté. |
-| `MAIN_APP_URL` | oui | Lien vers PoppyTrip (en-tête). |
-| `OIDC_ISSUER` | oui | Émetteur OIDC (voir section 3). |
-| `OIDC_CLIENT_ID` | oui | ID d’application Entra. |
-| `OIDC_CLIENT_SECRET` | oui | Secret client Entra. |
-| `OIDC_REDIRECT_URI` | oui | `PUBLIC_BASE_URL` + `/` + `ADMIN_PATH_PREFIX` + `/auth/callback` (vérifié). |
-| `ADMIN_EMAIL` | oui | L’unique adresse autorisée (compte Microsoft personnel). |
-| `ADMIN_OIDC_SUB` | après la 1re connexion | Identifiant stable du compte (affiché une fois à l’écran et dans les journaux). |
-| `SESSION_SECRET` | oui | ≥ 32 octets aléatoires. |
-| `DATABASE_URL_READONLY` | oui | Rôle `monitoring_reader` (jamais la `DATABASE_URL` de PoppyTrip). |
-| `DATABASE_URL_APP` | oui | Rôle `monitoring_app_rw`. |
-| `DB_SSL_CA` | non | Certificat d’autorité PEM si la base est jointe hors réseau privé. |
-| `TIMEZONE` | non (`Europe/Brussels`) | Fuseau d’affichage des heures. |
-| `DB_SIZE_LIMIT_BYTES` | non | Limite de la base ; sans valeur : « limite non configurée ». |
-| `STORAGE_LIMIT_BYTES` | non | Limite du stockage de fichiers. |
-| `USD_TO_EUR_RATE` | non | Taux pour la marge estimée (coûts IA en USD, revenus en EUR). |
-| `CREDIT_WARN_PERCENT` / `CREDIT_CRITICAL_PERCENT` | non (`70` / `90`) | Seuils du crédit Anthropic. |
-| `STORAGE_WARN_PERCENT` / `STORAGE_CRITICAL_PERCENT` | non (`80` / `90`) | Seuils d’occupation base et stockage. |
-| `SATURATION_ALERT_DAYS` | non (`30`) | Alerte si la saturation est prévue dans moins de N jours. |
-| `ANTHROPIC_PROVIDER_LABEL` | non (`anthropic`) | Valeur de `provider` qui désigne Anthropic. |
-| `ANTHROPIC_ADMIN_KEY` | non | Clé d’administration (`sk-ant-admin…`) pour le recoupement ; jamais envoyée au navigateur. |
-| `ANTHROPIC_API_BASE_URL` | si clé | `https://api.anthropic.com`. |
-| `ANTHROPIC_API_VERSION` | non (`2026-10-21`) | En-tête `anthropic-version`. |
-| `ALERTS_ENABLED` | non (`false`) | Active les alertes e-mail vers `ADMIN_EMAIL`. |
-| `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM` | si alertes | Envoi SMTP (TLS exigé). |
+| `NODE_ENV` | `production` | `production`, `development` ou `test`. En production : HTTPS exigé. |
+| `PORT` / `HOST` | `3000` / `0.0.0.0` | Écoute du serveur (Railway fournit `PORT`). |
+| `LOG_LEVEL` | `info` | Niveau de journalisation. |
+| `TRUST_PROXY_HOPS` | `0` | Mandataires de confiance devant le service (**Railway : 1**). |
+| `TIMEZONE` | `Europe/Brussels` | Fuseau d’affichage des heures. |
+| `DB_SSL_CA` | — | Certificat d’autorité PEM si la base est jointe hors réseau privé. |
+| `DB_SIZE_LIMIT_BYTES` | — | Limite de la base ; sans valeur : « limite non configurée ». |
+| `STORAGE_LIMIT_BYTES` | — | Limite du stockage de fichiers. |
+| `USD_TO_EUR_RATE` | — | Taux pour la marge estimée (coûts IA en USD, revenus en EUR). |
+| `CREDIT_WARN_PERCENT` / `CREDIT_CRITICAL_PERCENT` | `70` / `90` | Seuils du crédit Anthropic. |
+| `STORAGE_WARN_PERCENT` / `STORAGE_CRITICAL_PERCENT` | `80` / `90` | Seuils d’occupation base et stockage. |
+| `SATURATION_ALERT_DAYS` | `30` | Alerte si la saturation est prévue dans moins de N jours. |
+| `ANTHROPIC_PROVIDER_LABEL` | `anthropic` | Valeur de `provider` qui désigne Anthropic. |
+| `ANTHROPIC_ADMIN_KEY` | — | Clé d’administration (`sk-ant-admin…`) pour le recoupement ; jamais envoyée au navigateur. |
+| `ANTHROPIC_API_BASE_URL` | — | `https://api.anthropic.com` (obligatoire avec la clé). |
+| `ANTHROPIC_API_VERSION` | `2026-10-21` | En-tête `anthropic-version`. |
+| `ALERTS_ENABLED` | `false` | Active les alertes e-mail. |
+| `ALERT_EMAIL_TO` | — | Destinataire des alertes (obligatoire si alertes). |
+| `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM` | `587`, `false` | Envoi SMTP (TLS exigé). |
 
 ## 6. Déploiement sur Railway
 
@@ -156,22 +175,22 @@ obligatoire manque ou est faible. `.env.example` ne contient que des valeurs fic
    - **ne jamais** référencer `${{Postgres.DATABASE_URL}}` ni la `DATABASE_URL` de PoppyTrip
      (compte principal, tous droits) : le serveur refuse de démarrer si l’utilisateur n’est pas le
      rôle attendu.
-3. **Settings → Networking** : générer un domaine (ou un domaine personnalisé) et reporter l’origine
-   dans `PUBLIC_BASE_URL` / `OIDC_REDIRECT_URI` (et dans Entra).
+3. **Settings → Networking** : générer un domaine (ou un domaine personnalisé), le reporter dans
+   `PUBLIC_BASE_URL` et dans `MONITORING_SSO_CALLBACK_URL` de PoppyTrip.
 4. Un seul réplica (limitation de débit et cache en mémoire).
 
 ## 7. Ordre de mise en service
 
-1. **Application principale d’abord** : déployer la migration des vues `monitoring_*`
-   (`prisma migrate deploy`).
+1. **Application principale d’abord** : déployer la migration des vues `monitoring_*` et la page de
+   connexion du suivi (branche `monitoring-sso` de PoppyTrip).
 2. Lancer **à la main** `ops/monitoring-roles.sql` de PoppyTrip avec le compte principal (crée
    `monitoring_reader`, `monitoring_app_rw` et le schéma `monitoring_app`) ; ranger les deux mots
    de passe générés dans le gestionnaire de secrets.
-3. Créer l’application Entra (section 3) avec l’URI de redirection définitive.
-4. Créer le service Railway et ses variables (sections 5 et 6), **sans** `ADMIN_OIDC_SUB`.
-5. Ouvrir `https://<domaine>/<ADMIN_PATH_PREFIX>/auth/login`, se connecter : le site affiche une fois
-   `renseigne ADMIN_OIDC_SUB=…` (également dans les journaux). Reporter cette valeur dans Railway et
-   redéployer. Le message d’avertissement au démarrage disparaît.
+3. Générer la paire de clés et relever l’identifiant de ton compte (section 3) ; ajouter
+   `MONITORING_SSO_PRIVATE_KEY`, `MONITORING_SSO_CALLBACK_URL` et `MONITORING_ADMIN_USER_ID` à
+   PoppyTrip et le redéployer.
+4. Créer le service Railway du suivi et ses variables (sections 5 et 6).
+5. Ouvrir `https://<domaine>/<ADMIN_PATH_PREFIX>/auth/login` et se connecter avec ton compte PoppyTrip.
 6. Saisir la première recharge (ou le solde initial) du crédit Anthropic, puis éventuellement
    `ANTHROPIC_ADMIN_KEY` et les alertes e-mail.
 
@@ -189,12 +208,12 @@ obligatoire manque ou est faible. `.env.example` ne contient que des valeurs fic
 
 ## 9. Option : Cloudflare Access
 
-Pour une protection supplémentaire (configuration, pas de code) : placer le domaine derrière
-Cloudflare (proxy activé), créer une application **Cloudflare Zero Trust → Access → Self-hosted**
-sur `https://<domaine>/<ADMIN_PATH_PREFIX>/*`, politique **Allow** limitée à la même adresse e-mail
-(code à usage unique ou fournisseur d’identité), et laisser `/healthz` hors de l’application pour
-le contrôle de santé de Railway. Dans ce cas, compter le mandataire Cloudflare dans
-`TRUST_PROXY_HOPS` (2 au lieu de 1).
+Pour une protection supplémentaire, notamment une double authentification que PoppyTrip n’a pas
+(configuration, pas de code) : placer le domaine derrière Cloudflare (proxy activé), créer une
+application **Cloudflare Zero Trust → Access → Self-hosted** sur
+`https://<domaine>/<ADMIN_PATH_PREFIX>/*`, politique **Allow** limitée à ta seule adresse e-mail
+(code à usage unique ou fournisseur d’identité), et laisser `/healthz` hors de l’application pour le
+contrôle de santé de Railway. Compter alors le mandataire Cloudflare dans `TRUST_PROXY_HOPS` (2).
 
 ## 10. Notes et limites
 

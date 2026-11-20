@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { FLOW_COOKIE, NOT_FOUND_BODY, SESSION_COOKIE } from '../src/server/app.js';
 import { renderIndex } from '../src/server/http/static.js';
 import {
@@ -11,17 +11,10 @@ import {
   TEST_PREFIX,
   type TestApp,
 } from './helpers/app.js';
-import { startMockOidc, type MockOidc } from './helpers/mockOidc.js';
+import { SSO_URL } from './helpers/mockSso.js';
 
-let mock: MockOidc;
 let t: TestApp;
 
-beforeAll(async () => {
-  mock = await startMockOidc();
-});
-afterAll(async () => {
-  await mock.close();
-});
 afterEach(async () => {
   await t?.close();
 });
@@ -32,7 +25,7 @@ const stable = (h: Record<string, unknown>) =>
 
 describe('visiteur non connecté', () => {
   it('reçoit une 404 strictement identique partout sauf connexion, retour et santé', async () => {
-    t = await createTestApp(mock);
+    t = await createTestApp();
     const requests: Array<{ method: 'GET' | 'POST' | 'PUT' | 'DELETE' | 'OPTIONS' | 'HEAD'; url: string; headers?: Record<string, string> }> = [
       { method: 'GET', url: '/' },
       { method: 'GET', url: '/inconnu' },
@@ -67,29 +60,29 @@ describe('visiteur non connecté', () => {
   });
 
   it('/healthz répond « ok » sans aucune information', async () => {
-    t = await createTestApp(mock);
+    t = await createTestApp();
     const res = await t.app.inject({ url: '/healthz' });
     expect(res.statusCode).toBe(200);
     expect(res.body).toBe('ok');
   });
 
   it('robots.txt interdit tout', async () => {
-    t = await createTestApp(mock);
+    t = await createTestApp();
     const res = await t.app.inject({ url: '/robots.txt' });
     expect(res.body).toBe('User-agent: *\nDisallow: /\n');
   });
 
-  it('le démarrage de connexion redirige vers le fournisseur avec PKCE S256, state et nonce', async () => {
-    t = await createTestApp(mock);
+  it('le démarrage de connexion redirige vers la page de connexion de PoppyTrip avec state et nonce aléatoires', async () => {
+    t = await createTestApp();
     const res = await t.app.inject({ url: `${BASE}/auth/login` });
     expect(res.statusCode).toBe(302);
     const loc = new URL(String(res.headers.location));
-    expect(loc.origin).toBe(mock.issuer);
-    expect(loc.searchParams.get('code_challenge_method')).toBe('S256');
-    expect(loc.searchParams.get('code_challenge')).toMatch(/^[A-Za-z0-9_-]{43}$/);
-    expect(loc.searchParams.get('state')).toBeTruthy();
-    expect(loc.searchParams.get('nonce')).toBeTruthy();
-    expect(loc.searchParams.get('redirect_uri')).toBe(`${TEST_ORIGIN}${BASE}/auth/callback`);
+    expect(`${loc.origin}${loc.pathname}`).toBe(SSO_URL);
+    expect(loc.searchParams.get('state')).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(loc.searchParams.get('nonce')).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(loc.searchParams.get('state')).not.toBe(loc.searchParams.get('nonce'));
+    // Aucune adresse de retour transmise : PoppyTrip renvoie toujours vers l'adresse configurée.
+    expect([...loc.searchParams.keys()].sort()).toEqual(['nonce', 'state']);
     const flow = setCookieHeader(res.headers, FLOW_COOKIE)!;
     expect(flow).toMatch(/; Max-Age=600/);
     expect(flow).toMatch(/; Path=\//);
@@ -102,8 +95,8 @@ describe('visiteur non connecté', () => {
 
 describe('en-têtes et cookies', () => {
   it('pose les en-têtes de sécurité sur toutes les réponses', async () => {
-    t = await createTestApp(mock);
-    const { sessionCookie } = await login(t, mock);
+    t = await createTestApp();
+    const { sessionCookie } = await login(t);
     for (const res of [
       await t.app.inject({ url: '/healthz' }),
       await t.app.inject({ url: '/nope' }),
@@ -131,8 +124,8 @@ describe('en-têtes et cookies', () => {
   });
 
   it('cookie de session : __Host-, Secure, HttpOnly, SameSite=Strict, Path=/', async () => {
-    t = await createTestApp(mock);
-    const r = await login(t, mock);
+    t = await createTestApp();
+    const r = await login(t);
     const c = setCookieHeader(r.headers, SESSION_COOKIE)!;
     expect(c).toMatch(/^__Host-mon_sid=[A-Za-z0-9_-]{43};/);
     expect(c).toMatch(/; Path=\//);
@@ -145,8 +138,8 @@ describe('en-têtes et cookies', () => {
   });
 
   it('pas de CORS : aucune autorisation d’origine tierce', async () => {
-    t = await createTestApp(mock);
-    const { sessionCookie } = await login(t, mock);
+    t = await createTestApp();
+    const { sessionCookie } = await login(t);
     const res = await t.app.inject({
       url: `${BASE}/api/session`,
       headers: { ...cookieHeader(sessionCookie!), origin: 'https://evil.example' },
@@ -158,8 +151,8 @@ describe('en-têtes et cookies', () => {
 
 describe('CSRF', () => {
   it('exige le jeton CSRF ET la bonne origine pour toute modification', async () => {
-    t = await createTestApp(mock);
-    const { sessionCookie } = await login(t, mock);
+    t = await createTestApp();
+    const { sessionCookie } = await login(t);
     const csrf = (await t.app.inject({ url: `${BASE}/api/session`, headers: cookieHeader(sessionCookie!) })).json()
       .csrfToken as string;
     const base = { method: 'POST' as const, url: `${BASE}/auth/logout` };
@@ -183,7 +176,7 @@ describe('CSRF', () => {
 
 describe('limitation de débit', () => {
   it('limite strictement la connexion et son retour', async () => {
-    t = await createTestApp(mock, { rateLimits: { globalMax: 1000, authMax: 3, windowMs: 60_000 } });
+    t = await createTestApp({ rateLimits: { globalMax: 1000, authMax: 3, windowMs: 60_000 } });
     const codes = [];
     for (let i = 0; i < 5; i++) codes.push((await t.app.inject({ url: `${BASE}/auth/login` })).statusCode);
     expect(codes).toEqual([302, 302, 302, 429, 429]);
@@ -193,7 +186,7 @@ describe('limitation de débit', () => {
   });
 
   it('limite le reste du site', async () => {
-    t = await createTestApp(mock, { rateLimits: { globalMax: 5, authMax: 5, windowMs: 60_000 } });
+    t = await createTestApp({ rateLimits: { globalMax: 5, authMax: 5, windowMs: 60_000 } });
     const codes = [];
     for (let i = 0; i < 7; i++) codes.push((await t.app.inject({ url: `/x${i}` })).statusCode);
     expect(codes.slice(0, 5)).toEqual([404, 404, 404, 404, 404]);
@@ -203,8 +196,8 @@ describe('limitation de débit', () => {
 
 describe('préfixe d’administration', () => {
   it('est injecté à l’exécution dans la page servie (absent du build)', async () => {
-    t = await createTestApp(mock);
-    const { sessionCookie } = await login(t, mock);
+    t = await createTestApp();
+    const { sessionCookie } = await login(t);
     const res = await t.app.inject({ url: `${BASE}/`, headers: cookieHeader(sessionCookie!) });
     expect(res.statusCode).toBe(200);
     expect(res.body).toContain(`<base href="/${TEST_PREFIX}/">`);
@@ -219,8 +212,8 @@ describe('préfixe d’administration', () => {
   });
 
   it('le site n’existe pas hors du préfixe, même connecté', async () => {
-    t = await createTestApp(mock);
-    const { sessionCookie } = await login(t, mock);
+    t = await createTestApp();
+    const { sessionCookie } = await login(t);
     for (const url of ['/', '/api/session', '/assets/app.js', `${BASE}x/`]) {
       const res = await t.app.inject({ url, headers: cookieHeader(sessionCookie!) });
       expect(res.statusCode).toBe(404);

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { parseEd25519PublicKey } from './auth/sso.js';
 
 /**
  * Configuration : TOUT vient des variables d'environnement, validées au démarrage.
@@ -78,14 +79,14 @@ const rawSchema = z.object({
 
   PUBLIC_BASE_URL: z.url(),
   ADMIN_PATH_PREFIX: z.string(),
-  MAIN_APP_URL: z.url(),
 
-  OIDC_ISSUER: z.url(),
-  OIDC_CLIENT_ID: z.string().trim().min(1),
-  OIDC_CLIENT_SECRET: z.string().min(1),
-  OIDC_REDIRECT_URI: z.url(),
-  ADMIN_EMAIL: z.email(),
-  ADMIN_OIDC_SUB: optionalString,
+  // Connexion avec le compte PoppyTrip (page de connexion du suivi servie par PoppyTrip).
+  POPPYTRIP_SSO_URL: z.url(),
+  POPPYTRIP_SSO_PUBLIC_KEY: z.string().min(1),
+  ADMIN_ACCOUNT_ID: z
+    .string()
+    .trim()
+    .regex(/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/, 'identifiant de compte (uuid) attendu'),
 
   SESSION_SECRET: z.string(),
 
@@ -115,6 +116,7 @@ const rawSchema = z.object({
   SMTP_USER: optionalString,
   SMTP_PASSWORD: optionalString,
   SMTP_FROM: z.preprocess(emptyToUndefined, z.email().optional()),
+  ALERT_EMAIL_TO: z.preprocess(emptyToUndefined, z.email().optional()),
 });
 
 export type AppConfig = ReturnType<typeof loadConfig>;
@@ -178,20 +180,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
   if (/exemple|example|changeme|generer|fictif/i.test(prefix)) problems.push('ADMIN_PATH_PREFIX : valeur d’exemple, à générer');
 
   const basePath = `/${prefix}`;
-  const expectedRedirect = `${publicOrigin}${basePath}/auth/callback`;
-  if (e.OIDC_REDIRECT_URI !== expectedRedirect) {
-    problems.push('OIDC_REDIRECT_URI : doit valoir PUBLIC_BASE_URL + "/" + ADMIN_PATH_PREFIX + "/auth/callback"');
+
+  // PoppyTrip : son origine est l'émetteur attendu du jeton et le lien « Application principale ».
+  const ssoUrl = new URL(e.POPPYTRIP_SSO_URL);
+  if (production && ssoUrl.protocol !== 'https:') problems.push('POPPYTRIP_SSO_URL : HTTPS obligatoire en production');
+  const ssoPublicKey = e.POPPYTRIP_SSO_PUBLIC_KEY.replace(/\\n/g, '\n');
+  try {
+    parseEd25519PublicKey(ssoPublicKey);
+  } catch {
+    problems.push('POPPYTRIP_SSO_PUBLIC_KEY : clé publique Ed25519 (PEM) attendue');
   }
 
-  const issuer = new URL(e.OIDC_ISSUER);
-  if (production && issuer.protocol !== 'https:') problems.push('OIDC_ISSUER : HTTPS obligatoire en production');
-  const mainApp = new URL(e.MAIN_APP_URL);
-  if (production && mainApp.protocol !== 'https:') problems.push('MAIN_APP_URL : HTTPS obligatoire en production');
-
-  if (production) {
-    const weakClient = isWeakSecret(e.OIDC_CLIENT_SECRET, 16);
-    if (weakClient) problems.push(`OIDC_CLIENT_SECRET : ${weakClient}`);
-  }
   const weakSession = isWeakSecret(e.SESSION_SECRET, 32);
   if (weakSession) problems.push(`SESSION_SECRET : ${weakSession}`);
 
@@ -226,7 +225,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
   }
 
   if (e.ALERTS_ENABLED) {
-    if (!e.SMTP_HOST || !e.SMTP_FROM) problems.push('ALERTS_ENABLED=true exige SMTP_HOST et SMTP_FROM');
+    if (!e.SMTP_HOST || !e.SMTP_FROM || !e.ALERT_EMAIL_TO) {
+      problems.push('ALERTS_ENABLED=true exige SMTP_HOST, SMTP_FROM et ALERT_EMAIL_TO');
+    }
     if ((e.SMTP_USER && !e.SMTP_PASSWORD) || (!e.SMTP_USER && e.SMTP_PASSWORD)) {
       problems.push('SMTP_USER et SMTP_PASSWORD vont ensemble');
     }
@@ -245,16 +246,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
     publicHost: publicUrl.host,
     prefix,
     basePath,
-    mainAppUrl: mainApp.toString(),
-    oidc: {
-      issuer: e.OIDC_ISSUER,
-      clientId: e.OIDC_CLIENT_ID,
-      clientSecret: e.OIDC_CLIENT_SECRET,
-      redirectUri: e.OIDC_REDIRECT_URI,
+    mainAppUrl: `${ssoUrl.origin}/`,
+    sso: {
+      loginUrl: ssoUrl.toString(),
+      issuer: ssoUrl.origin,
+      audience: publicOrigin,
+      publicKeyPem: ssoPublicKey,
+      /** Adresse de retour à déclarer dans PoppyTrip (MONITORING_SSO_CALLBACK_URL). */
+      callbackUrl: `${publicOrigin}${basePath}/auth/callback`,
     },
     admin: {
-      email: e.ADMIN_EMAIL.trim().toLowerCase(),
-      sub: e.ADMIN_OIDC_SUB,
+      accountId: e.ADMIN_ACCOUNT_ID.toLowerCase(),
     },
     sessionSecret: e.SESSION_SECRET,
     db: {
@@ -293,6 +295,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
             from: e.SMTP_FROM ?? null,
           }
         : null,
+      to: e.ALERT_EMAIL_TO ?? null,
     },
   };
 }

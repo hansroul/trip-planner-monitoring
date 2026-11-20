@@ -8,7 +8,7 @@ paramétré, Zod, Vitest. Interface en français uniquement.
 
 1. **Aucune donnée personnelle.** Ni lue, ni affichée, ni journalisée, ni renvoyée par l'API :
    pas d'e-mail, pas de nom, aucune liste de personnes. Seulement des comptages et des montants.
-   L'adresse autorisée (ADMIN_EMAIL) n'apparaît dans aucun fichier versionné ni aucune réponse.
+   Aucune adresse réelle (destinataire des alertes compris) dans un fichier versionné ou une réponse.
 2. **Aucun secret versionné.** Ni clé, ni mot de passe, ni URL de base, ni adresse réelle dans le
    dépôt (y compris tests, exemples et messages de commit). Les tests utilisent des valeurs
    fictives (`admin@example.com`, domaines `.test`/`example.*`). Le hook de pré-commit et
@@ -24,7 +24,7 @@ paramétré, Zod, Vitest. Interface en français uniquement.
 5. **Jamais de lecture des tables de PoppyTrip**, jamais la `DATABASE_URL` de PoppyTrip. Les
    écritures propres au site vont uniquement dans le schéma `monitoring_app` (rôle
    `monitoring_app_rw`, migrations SQL dans `sql/migrations/`). Ce site ne crée aucun rôle.
-6. **Jamais de journalisation de jetons ou de cookies** (ni code OIDC, state, nonce, jeton CSRF,
+6. **Jamais de journalisation de jetons ou de cookies** (ni jeton PoppyTrip, state, nonce, jeton CSRF,
    identifiant de session, clé Anthropic, mot de passe). Utiliser `safeError()` / `redactObject()`
    de `src/server/logger.ts` ; les URL sont journalisées sans chaîne de requête et avec le
    préfixe masqué.
@@ -37,8 +37,9 @@ paramétré, Zod, Vitest. Interface en français uniquement.
 - Politique de contenu stricte : aucun script ni style en ligne, aucune ressource externe (pas de
   CDN, pas de police distante, aucun traceur). Graphiques SVG avec attributs de présentation
   uniquement, jamais d'attribut `style`.
-- OIDC uniquement via `openid-client` (PKCE, state, nonce, signature vérifiée avec
-  `enableNonRepudiationChecks`) ; pas de cryptographie maison.
+- Connexion uniquement avec le compte PoppyTrip `ADMIN_ACCOUNT_ID` : jeton Ed25519 de PoppyTrip
+  vérifié par `jose` (`src/server/auth/sso.ts` : algorithme, type, émetteur, audience, âge, nonce
+  lié au cookie de flux, state). Jamais de lecture de la table `users` ; pas de cryptographie maison.
 - Pas de dépendance inutile ; versions exactes, figées par `package-lock.json`.
 
 ## Commandes

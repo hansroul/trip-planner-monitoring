@@ -24,7 +24,6 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
   const [live, setLive] = useState<LiveResponse | null>(null);
   const [liveError, setLiveError] = useState<string | null>(null);
-  const [subNotice, setSubNotice] = useState<string | null>(null);
 
   const onError = useCallback((err: unknown, set: (m: string) => void) => {
     if (err instanceof SessionExpiredError) setExpired(true);
@@ -36,7 +35,6 @@ export function App() {
       .then((s) => {
         setCsrfToken(s.csrfToken);
         setTimeZone(s.timezone);
-        setSubNotice(s.subNotice);
         setSession(s);
       })
       .catch((e: unknown) => onError(e, setError));
@@ -126,15 +124,6 @@ export function App() {
         </nav>
       </header>
       <main id="contenu">
-        {subNotice ? (
-          <div className="banner" role="alert">
-            Renseigne <code>ADMIN_OIDC_SUB={subNotice}</code> dans la configuration (message affiché une seule fois). Tant que cette valeur
-            n’est pas définie, la connexion n’est vérifiée que par l’adresse.{' '}
-            <button type="button" className="link" onClick={() => setSubNotice(null)}>
-              Masquer
-            </button>
-          </div>
-        ) : null}
         <LiveBlock live={live} presence={overview?.presence ?? null} error={liveError} />
         <PeriodSelector value={period} onChange={setPeriod} today={overview?.period.today ?? null} />
         {overview ? (

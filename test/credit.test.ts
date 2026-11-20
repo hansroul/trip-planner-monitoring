@@ -8,10 +8,8 @@ import { creditCandidates, processAlerts, storageCandidates, type Mailer } from 
 import { runAlertCheck } from '../src/server/services/jobs.js';
 import { ReadRepository } from '../src/server/data/repository.js';
 import { BASE, cookieHeader, createTestApp, login, TEST_ORIGIN, type TestApp } from './helpers/app.js';
-import { startMockOidc, type MockOidc } from './helpers/mockOidc.js';
 
 const FAKE_ADMIN_KEY = ['sk', 'ant', 'admin01', 'TestOnlyNotARealKey0123456789'].join('-');
-let mock: MockOidc;
 let t: TestApp;
 let sid: string;
 let csrf: string;
@@ -19,21 +17,19 @@ let apiCalls: Array<{ url: string; headers: Record<string, string> }> = [];
 let apiAmountCents = '12345.000000';
 
 beforeAll(async () => {
-  mock = await startMockOidc();
   setAdminFetch(async (url, init) => {
     apiCalls.push({ url, headers: init.headers });
     return { ok: true, status: 200, json: async () => ({ data: [{ cost: { amount: apiAmountCents, currency: 'USD' } }], has_more: false, next_page: null }) };
   });
-  t = await createTestApp(mock, {
+  t = await createTestApp({
     registerApi,
     env: { ANTHROPIC_ADMIN_KEY: FAKE_ADMIN_KEY, ANTHROPIC_API_BASE_URL: 'https://api.example.test', DB_SIZE_LIMIT_BYTES: '20000000' },
   });
-  sid = (await login(t, mock)).sessionCookie!;
+  sid = (await login(t)).sessionCookie!;
   csrf = (await t.app.inject({ url: `${BASE}/api/session`, headers: cookieHeader(sid) })).json().csrfToken;
 });
 afterAll(async () => {
   await t.close();
-  await mock.close();
 });
 beforeEach(async () => {
   await t.pools.app.query('DELETE FROM monitoring_app.credit_topups');

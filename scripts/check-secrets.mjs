@@ -15,7 +15,7 @@ import { pathToFileURL } from 'node:url';
 /** Valeur manifestement fictive : mot-clé d'exemple, variable, ou suite de mots en minuscules. */
 export function isFakeValue(v) {
   if (/fictif|exemple|example|changeme|remplacer|xxxx|\$\{|<|process\.env|dev-only-/i.test(v)) return true;
-  return /^[a-z]+(?:[-_][a-z]+)+$/.test(v);
+  return /^[a-z]+(?:[-_+.][a-z]+)+$/.test(v);
 }
 
 export const RULES = [

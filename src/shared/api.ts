@@ -8,7 +8,6 @@ export interface SessionInfo {
   csrfToken: string;
   absoluteExpiresAt: string;
   idleTimeoutSeconds: number;
-  subNotice: string | null;
   mainAppUrl: string;
   timezone: string;
 }

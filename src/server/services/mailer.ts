@@ -2,10 +2,10 @@ import nodemailer from 'nodemailer';
 import type { AppConfig } from '../config.js';
 import type { Mailer } from './alerts.js';
 
-/** Envoi SMTP vers ADMIN_EMAIL uniquement (adresse jamais transmise au navigateur). */
+/** Envoi SMTP vers ALERT_EMAIL_TO uniquement (adresse jamais transmise au navigateur). */
 export function createMailer(config: AppConfig): Mailer | null {
   const smtp = config.alerts.smtp;
-  if (!config.alerts.enabled || !smtp || !smtp.from) return null;
+  if (!config.alerts.enabled || !smtp || !smtp.from || !config.alerts.to) return null;
   const transport = nodemailer.createTransport({
     host: smtp.host,
     port: smtp.port,
@@ -16,7 +16,7 @@ export function createMailer(config: AppConfig): Mailer | null {
   });
   return {
     async send(subject, text) {
-      await transport.sendMail({ from: smtp.from!, to: config.admin.email, subject, text });
+      await transport.sendMail({ from: smtp.from!, to: config.alerts.to!, subject, text });
     },
   };
 }

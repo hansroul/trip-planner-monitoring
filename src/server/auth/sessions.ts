@@ -21,13 +21,11 @@ export interface Session {
   createdAt: Date;
   lastSeenAt: Date;
   absoluteExpiresAt: Date;
-  subNotice: string | null;
 }
 
 export interface LoginFlow {
   state: string;
   nonce: string;
-  codeVerifier: string;
 }
 
 export const randomToken = () => randomBytes(32).toString('base64url');
@@ -38,7 +36,6 @@ interface SessionRow {
   created_at: Date;
   last_seen_at: Date;
   absolute_expires_at: Date;
-  sub_notice: string | null;
 }
 
 const toSession = (r: SessionRow): Session => ({
@@ -47,7 +44,6 @@ const toSession = (r: SessionRow): Session => ({
   createdAt: r.created_at,
   lastSeenAt: r.last_seen_at,
   absoluteExpiresAt: r.absolute_expires_at,
-  subNotice: r.sub_notice,
 });
 
 export class SessionStore {
@@ -61,13 +57,13 @@ export class SessionStore {
     return createHmac('sha256', this.secret).update(id).digest('hex');
   }
 
-  async create(opts: { subNotice?: string | null } = {}): Promise<{ id: string; session: Session }> {
+  async create(): Promise<{ id: string; session: Session }> {
     const id = randomToken();
     const now = this.now();
     const { rows } = await this.pool.query<SessionRow>(
-      `INSERT INTO monitoring_app.sessions (id_hash, csrf_token, created_at, last_seen_at, absolute_expires_at, sub_notice)
-       VALUES ($1, $2, $3, $3, $4, $5) RETURNING *`,
-      [this.hash(id), randomToken(), now, new Date(now.getTime() + SESSION_ABSOLUTE_MS), opts.subNotice ?? null],
+      `INSERT INTO monitoring_app.sessions (id_hash, csrf_token, created_at, last_seen_at, absolute_expires_at)
+       VALUES ($1, $2, $3, $3, $4) RETURNING *`,
+      [this.hash(id), randomToken(), now, new Date(now.getTime() + SESSION_ABSOLUTE_MS)],
     );
     return { id, session: toSession(rows[0]!) };
   }
@@ -106,22 +102,11 @@ export class SessionStore {
     await this.pool.query('DELETE FROM monitoring_app.sessions WHERE id_hash = $1', [this.hash(id)]);
   }
 
-  /** Lit puis efface le message « renseigne ADMIN_OIDC_SUB » (affiché une seule fois). */
-  async takeSubNotice(idHash: string): Promise<string | null> {
-    const { rows } = await this.pool.query<{ sub_notice: string | null }>(
-      `UPDATE monitoring_app.sessions s SET sub_notice = NULL
-       FROM (SELECT id_hash, sub_notice FROM monitoring_app.sessions WHERE id_hash = $1 FOR UPDATE) old
-       WHERE s.id_hash = old.id_hash RETURNING old.sub_notice`,
-      [idHash],
-    );
-    return rows[0]?.sub_notice ?? null;
-  }
-
   async createFlow(flow: LoginFlow): Promise<string> {
     const id = randomToken();
     await this.pool.query(
-      `INSERT INTO monitoring_app.login_flows (id_hash, state, nonce, code_verifier, expires_at) VALUES ($1, $2, $3, $4, $5)`,
-      [this.hash(id), flow.state, flow.nonce, flow.codeVerifier, new Date(this.now().getTime() + LOGIN_FLOW_MS)],
+      `INSERT INTO monitoring_app.login_flows (id_hash, state, nonce, expires_at) VALUES ($1, $2, $3, $4)`,
+      [this.hash(id), flow.state, flow.nonce, new Date(this.now().getTime() + LOGIN_FLOW_MS)],
     );
     return id;
   }
@@ -129,13 +114,13 @@ export class SessionStore {
   /** Usage unique : le flux est supprimé à la lecture, même s'il a expiré. */
   async consumeFlow(id: string | undefined): Promise<LoginFlow | null> {
     if (!id || !TOKEN_RE.test(id)) return null;
-    const { rows } = await this.pool.query<{ state: string; nonce: string; code_verifier: string; expires_at: Date }>(
-      'DELETE FROM monitoring_app.login_flows WHERE id_hash = $1 RETURNING state, nonce, code_verifier, expires_at',
+    const { rows } = await this.pool.query<{ state: string; nonce: string; expires_at: Date }>(
+      'DELETE FROM monitoring_app.login_flows WHERE id_hash = $1 RETURNING state, nonce, expires_at',
       [this.hash(id)],
     );
     const r = rows[0];
     if (!r || r.expires_at.getTime() <= this.now().getTime()) return null;
-    return { state: r.state, nonce: r.nonce, codeVerifier: r.code_verifier };
+    return { state: r.state, nonce: r.nonce };
   }
 
   async prune(): Promise<void> {
