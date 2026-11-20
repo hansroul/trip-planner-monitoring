@@ -1,7 +1,7 @@
 # Site de suivi PoppyTrip : image minimale, utilisateur non root, aucun secret dans l'image
 # (toute la configuration arrive par les variables d'environnement de Railway).
 
-FROM node:24.22.3-alpine AS build
+FROM node:26.13.1-alpine AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --ignore-scripts --no-audit --no-fund
@@ -9,12 +9,12 @@ COPY tsconfig.base.json tsconfig.json tsconfig.server.json tsconfig.client.json 
 COPY src ./src
 RUN npm run build
 
-FROM node:24.22.3-alpine AS deps
+FROM node:26.13.1-alpine AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund && npm cache clean --force
 
-FROM node:24.22.3-alpine
+FROM node:26.13.1-alpine
 ENV NODE_ENV=production \
     PORT=3000
 WORKDIR /app
