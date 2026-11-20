@@ -100,6 +100,16 @@ describe('connexions', () => {
       rejectUnauthorized: true,
       servername: 'db.example.test',
     });
+    // Certificat auto-signé épinglé : la vérification reste active, sur le nom du certificat.
+    const pinned = sslFor({ host: 'proxy.example.test', privateNetwork: false }, 'PEM', 'postgres.railway.internal') as {
+      rejectUnauthorized: boolean;
+      ca: string;
+      checkServerIdentity: (host: string, cert: object) => Error | undefined;
+    };
+    expect(pinned).toMatchObject({ rejectUnauthorized: true, ca: 'PEM', servername: 'proxy.example.test' });
+    const cert = { subject: { CN: 'localhost' }, subjectaltname: 'DNS:localhost, DNS:postgres.railway.internal' };
+    expect(pinned.checkServerIdentity('proxy.example.test', cert)).toBeUndefined();
+    expect(pinned.checkServerIdentity('proxy.example.test', { ...cert, subjectaltname: 'DNS:autre.example.test' })).toBeInstanceOf(Error);
     const c = loadConfig(testEnv());
     const cfg = poolConfig(
       { ...c.db.readonly, url: 'postgres://monitoring_reader:x@db.example.test:5432/app?sslmode=disable', host: 'db.example.test', privateNetwork: false },

@@ -1,3 +1,4 @@
+import { checkServerIdentity } from 'node:tls';
 import pg from 'pg';
 import type { DbTarget } from '../config.js';
 
@@ -9,6 +10,8 @@ import type { DbTarget } from '../config.js';
  *
  * TLS : exigé et vérifié (certificat + nom d'hôte) dès que l'hôte n'est pas sur le réseau privé
  * (Railway *.railway.internal, ou boucle locale en développement).
+ * Certificat auto-signé (Postgres de Railway joint par son proxy public) : son autorité est épinglée
+ * (DB_SSL_CA) et le nom inscrit dans le certificat est vérifié (DB_SSL_HOSTNAME), jamais désactivé.
  */
 
 export interface PoolOptions {
@@ -16,15 +19,22 @@ export interface PoolOptions {
   statementTimeoutMs: number;
   max: number;
   sslCa?: string | undefined;
+  sslHostname?: string | undefined;
   applicationName: string;
 }
 
-export function sslFor(target: Pick<DbTarget, 'host' | 'privateNetwork'>, sslCa?: string): pg.PoolConfig['ssl'] {
+export function sslFor(
+  target: Pick<DbTarget, 'host' | 'privateNetwork'>,
+  sslCa?: string,
+  sslHostname?: string,
+): pg.PoolConfig['ssl'] {
   if (target.privateNetwork) return false;
   return {
     rejectUnauthorized: true,
     servername: target.host,
     ...(sslCa ? { ca: sslCa } : {}),
+    // Nom attendu dans le certificat quand il diffère de l'hôte joint (proxy) : vérifié quand même.
+    ...(sslHostname ? { checkServerIdentity: (_host: string, cert: Parameters<typeof checkServerIdentity>[1]) => checkServerIdentity(sslHostname, cert) } : {}),
   };
 }
 
@@ -45,7 +55,7 @@ export function poolConfig(target: DbTarget, opts: PoolOptions): pg.PoolConfig {
     user: decodeURIComponent(u.username),
     password: decodeURIComponent(u.password),
     database: decodeURIComponent(u.pathname.replace(/^\//, '')) || 'postgres',
-    ssl: sslFor(target, opts.sslCa),
+    ssl: sslFor(target, opts.sslCa, opts.sslHostname),
     options: startup.join(' '),
     application_name: opts.applicationName,
     max: opts.max,
@@ -68,13 +78,19 @@ export interface Pools {
   app: pg.Pool;
 }
 
-export function createPools(db: { readonly: DbTarget; app: DbTarget; sslCa?: string | undefined }): Pools {
+export function createPools(db: {
+  readonly: DbTarget;
+  app: DbTarget;
+  sslCa?: string | undefined;
+  sslHostname?: string | undefined;
+}): Pools {
   return {
     read: createPool(db.readonly, {
       readonly: true,
       statementTimeoutMs: 5_000,
       max: 2,
       sslCa: db.sslCa,
+      sslHostname: db.sslHostname,
       applicationName: 'poppytrip-monitoring-read',
     }),
     app: createPool(db.app, {
@@ -82,6 +98,7 @@ export function createPools(db: { readonly: DbTarget; app: DbTarget; sslCa?: str
       statementTimeoutMs: 10_000,
       max: 4,
       sslCa: db.sslCa,
+      sslHostname: db.sslHostname,
       applicationName: 'poppytrip-monitoring-app',
     }),
   };

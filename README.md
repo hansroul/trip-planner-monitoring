@@ -64,6 +64,11 @@ Ouvrir ensuite `http://localhost:3000/<ADMIN_PATH_PREFIX>/auth/login` et se conn
 générer une avec `npm run hash-password`). Les cookies `Secure` fonctionnent sur
 `http://localhost` dans les navigateurs récents.
 
+- Base Railway jointe depuis ton poste (proxy public `*.proxy.rlwy.net`) : son certificat est
+  auto-signé par Railway et émis pour `postgres.railway.internal`. Lancer
+  `npm run db:ca -- <hôte> <port>` et coller les deux lignes affichées (`DB_SSL_CA`,
+  `DB_SSL_HOSTNAME`) dans `.env` : l’autorité est épinglée et le nom vérifié, la vérification TLS
+  n’est jamais désactivée. Inutile en production (réseau privé `*.railway.internal`).
 - Les fausses données sont recréées avec `docker compose down -v && docker compose up -d db`, ou
   sur une autre instance locale avec `DEV_PG_ADMIN_URL=postgres://… npm run db:dev:init -- --recreate`.
 - **Aucune donnée réelle dans le dépôt** ; le développement et les tests se font uniquement contre
@@ -137,7 +142,8 @@ obligatoire manque ou est faible. `.env.example` ne contient que des valeurs fic
 | `TRUST_PROXY_HOPS` | `0` | Mandataires de confiance devant le service (**Railway : 1**). |
 | `TIMEZONE` | `Europe/Brussels` | Fuseau d’affichage des heures. |
 | `MAIN_APP_URL` | — | Lien « Application principale » dans l’en-tête ; sans valeur : pas de lien. |
-| `DB_SSL_CA` | — | Certificat d’autorité PEM si la base est jointe hors réseau privé. |
+| `DB_SSL_CA` | — | Certificat d’autorité PEM épinglé si la base est jointe hors réseau privé (`npm run db:ca`). |
+| `DB_SSL_HOSTNAME` | — | Nom inscrit dans le certificat de la base s’il diffère de l’hôte joint (avec `DB_SSL_CA` uniquement). |
 | `DB_SIZE_LIMIT_BYTES` | — | Limite de la base ; sans valeur : « limite non configurée ». |
 | `STORAGE_LIMIT_BYTES` | — | Limite du stockage de fichiers. |
 | `USD_TO_EUR_RATE` | — | Taux pour la marge estimée (coûts IA en USD, revenus en EUR). |

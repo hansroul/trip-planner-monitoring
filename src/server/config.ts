@@ -1,3 +1,4 @@
+import { X509Certificate } from 'node:crypto';
 import { z } from 'zod';
 import { parsePasswordHash } from './auth/password.js';
 
@@ -91,6 +92,7 @@ const rawSchema = z.object({
   DATABASE_URL_READONLY: z.string().min(1),
   DATABASE_URL_APP: z.string().min(1),
   DB_SSL_CA: optionalString,
+  DB_SSL_HOSTNAME: z.preprocess(emptyToUndefined, z.string().regex(/^[A-Za-z0-9.-]{1,253}$/, 'nom d’hôte attendu').optional()),
 
   TIMEZONE: z.preprocess(emptyToUndefined, z.string().default(DEFAULT_TIMEZONE)),
   DB_SIZE_LIMIT_BYTES: positiveBigIntBytes,
@@ -231,6 +233,18 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
     }
   }
 
+  // Certificat auto-signé (Postgres de Railway joint par son proxy public) : autorité épinglée,
+  // et nom inscrit dans le certificat s'il diffère de l'hôte joint. Jamais de vérification désactivée.
+  const sslCa = e.DB_SSL_CA?.replace(/\\n/g, '\n');
+  if (sslCa !== undefined) {
+    try {
+      new X509Certificate(sslCa);
+    } catch {
+      problems.push('DB_SSL_CA : certificat PEM attendu (BEGIN CERTIFICATE)');
+    }
+  }
+  if (e.DB_SSL_HOSTNAME && !sslCa) problems.push('DB_SSL_HOSTNAME : seulement avec DB_SSL_CA (certificat épinglé)');
+
   if (problems.length > 0 || !readonlyDb || !appDb || !passwordHash) throw new ConfigError(problems);
 
   return {
@@ -253,7 +267,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
     db: {
       readonly: readonlyDb,
       app: appDb,
-      sslCa: e.DB_SSL_CA?.replace(/\\n/g, '\n'),
+      sslCa,
+      sslHostname: e.DB_SSL_HOSTNAME,
     },
     timezone: e.TIMEZONE,
     limits: {

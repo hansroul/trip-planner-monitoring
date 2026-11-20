@@ -94,6 +94,11 @@ describe('configuration', () => {
     expect(problems(env).join()).toContain('DATABASE_URL');
   });
 
+  it('certificat de base épinglé : PEM valide exigé, nom attendu seulement avec lui', () => {
+    expect(problems(testEnv({ DB_SSL_CA: 'pas-un-certificat' })).join()).toContain('DB_SSL_CA');
+    expect(problems(testEnv({ DB_SSL_HOSTNAME: 'postgres.railway.internal' })).join()).toContain('DB_SSL_HOSTNAME');
+  });
+
   it('exige la configuration SMTP quand les alertes sont activées', () => {
     const p = problems(testEnv({ ALERTS_ENABLED: 'true' })).join();
     expect(p).toContain('SMTP_HOST');
