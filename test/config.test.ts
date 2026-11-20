@@ -21,6 +21,7 @@ describe('configuration', () => {
     expect(c.basePath).toBe(`/${TEST_PREFIX}`);
     expect(c.admin.email).toBe(ADMIN_EMAIL);
     expect(c.admin.passwordHash.memory).toBe(19_456);
+    expect(c.admin.passwordHash.phc).toMatch(/^\$argon2id\$v=19\$/);
     expect(c.mainAppUrl).toBeNull();
     expect(loadConfig(testEnv({ MAIN_APP_URL: 'https://app.example.test/' })).mainAppUrl).toBe('https://app.example.test/');
     expect(c.anthropic.adminKey).toBeNull();
@@ -68,8 +69,8 @@ describe('configuration', () => {
     }
   });
 
-  it('exige une empreinte argon2id de mot de passe aux paramètres suffisants, jamais un mot de passe en clair', () => {
-    const ok = testPasswordHash('peu-importe-ici');
+  it('exige une empreinte argon2id de mot de passe aux paramètres suffisants, jamais un mot de passe en clair', async () => {
+    const ok = await testPasswordHash('peu-importe-ici');
     const weak = ok.replace('m=19456,t=2', 'm=4096,t=1');
     const argon2i = ok.replace('$argon2id$', '$argon2i$');
     const bcrypt = ['$2b$12$', 'a'.repeat(53)].join('');

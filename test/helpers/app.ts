@@ -1,4 +1,5 @@
-import { argon2Sync, randomBytes } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
+import argon2 from 'argon2';
 import path from 'node:path';
 import type { FastifyInstance } from 'fastify';
 import { inject } from 'vitest';
@@ -15,20 +16,10 @@ export const ADMIN_EMAIL = 'admin@example.com';
 export const ADMIN_PASSWORD = 'mot-de-passe-de-test-correct';
 
 /** Empreinte argon2id (format PHC) d'un mot de passe, paramètres minimaux admis (tests rapides). */
-export function testPasswordHash(password: string, params = { m: 19_456, t: 2, p: 1 }): string {
-  const salt = randomBytes(16);
-  const hash = argon2Sync('argon2id', {
-    message: password,
-    nonce: salt,
-    parallelism: params.p,
-    tagLength: 32,
-    memory: params.m,
-    passes: params.t,
-  });
-  const b64 = (b: Buffer) => b.toString('base64').replace(/=+$/, '');
-  return `$argon2id$v=19$m=${params.m},t=${params.t},p=${params.p}$${b64(salt)}$${b64(hash)}`;
+export function testPasswordHash(password: string, params = { m: 19_456, t: 2, p: 1 }): Promise<string> {
+  return argon2.hash(password, { type: argon2.argon2id, memoryCost: params.m, timeCost: params.t, parallelism: params.p });
 }
-const ADMIN_PASSWORD_HASH = testPasswordHash(ADMIN_PASSWORD);
+const ADMIN_PASSWORD_HASH = await testPasswordHash(ADMIN_PASSWORD);
 
 export function testEnv(overrides: Record<string, string | undefined> = {}): NodeJS.ProcessEnv {
   const urls = inject('dbUrls');

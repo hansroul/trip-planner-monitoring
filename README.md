@@ -31,7 +31,7 @@ Site de suivi (monitoring) **privé** de PoppyTrip, séparé de l’application 
   `/robots.txt` (tout interdit) et la page de connexion (et sa feuille de style).
 - Connexion avec **les identifiants de ton compte PoppyTrip**, vérifiés par **ce site** :
   formulaire e-mail + mot de passe, comparés à `ADMIN_EMAIL` et à `ADMIN_PASSWORD_HASH` (empreinte
-  argon2id, la même que celle de PoppyTrip, vérifiée par l’argon2 intégré à Node). PoppyTrip n’est
+  argon2id, la même que celle de PoppyTrip, vérifiée avec la même bibliothèque `argon2`). PoppyTrip n’est
   pas modifié et ce site ne lit jamais la table `users`. Le formulaire porte un jeton à usage unique
   lié à un cookie, l’origine est vérifiée, et un mauvais e-mail ou un mauvais mot de passe reçoit la
   même réponse « Identifiants refusés. ».
@@ -50,7 +50,7 @@ Site de suivi (monitoring) **privé** de PoppyTrip, séparé de l’application 
 
 ## 2. Installation locale
 
-Prérequis : Node.js 24 (`.nvmrc`), Docker (pour la base de développement).
+Prérequis : Node.js 20.19 ou plus récent (`.nvmrc` : 20 ; l’image de production utilise Node 24), Docker (pour la base de développement).
 
 ```sh
 npm install                      # installe aussi le hook de pré-commit (.githooks)

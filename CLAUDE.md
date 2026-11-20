@@ -39,7 +39,7 @@ paramétré, Zod, Vitest. Interface en français uniquement.
   uniquement, jamais d'attribut `style`.
 - Connexion uniquement par e-mail + mot de passe vérifiés par ce site : `ADMIN_EMAIL` et
   `ADMIN_PASSWORD_HASH` (argon2id au format PHC, celui de PoppyTrip ; `src/server/auth/password.ts`,
-  argon2 de `node:crypto`, comparaison à temps constant). Formulaire avec jeton à usage unique lié
+  bibliothèque `argon2`, comme PoppyTrip). Formulaire avec jeton à usage unique lié
   au cookie de flux + vérification d'origine ; même réponse pour un mauvais e-mail ou mot de passe.
   PoppyTrip n'est jamais modifié par ce projet ; jamais de lecture de la table `users`.
 - Pas de dépendance inutile ; versions exactes, figées par `package-lock.json`.

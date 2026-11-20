@@ -1,33 +1,26 @@
-import * as crypto from 'node:crypto';
-import { randomBytes, timingSafeEqual } from 'node:crypto';
-
-// argon2 est intégré à node:crypto depuis Node 24.7 : message clair plutôt qu'une erreur d'import.
-const argon2 = (crypto as Partial<typeof crypto>).argon2!;
-if (typeof argon2 !== 'function') {
-  throw new Error(`Node ${process.version} trop ancien : Node 24.7 ou plus récent requis (voir .nvmrc).`);
-}
+import argon2 from 'argon2';
 
 /**
  * Mot de passe de l'administrateur : empreinte argon2id au format PHC
  * ($argon2id$v=19$m=…,t=…,p=…$sel$empreinte), soit copiée telle quelle depuis la colonne
  * password_hash du compte PoppyTrip (même format), soit produite par `npm run hash-password`.
- * Calcul confié à node:crypto (argon2 natif de Node), comparaison à temps constant.
+ * Calcul et comparaison confiés à la bibliothèque argon2, la même que PoppyTrip.
  */
 
 const PHC_RE = /^\$argon2id\$v=19\$m=(\d+),t=(\d+),p=(\d+)\$([A-Za-z0-9+/]+={0,2})\$([A-Za-z0-9+/]+={0,2})$/;
 export const MAX_PASSWORD_LENGTH = 1024;
 
 export interface PasswordHash {
+  phc: string;
   memory: number;
   passes: number;
   parallelism: number;
-  salt: Buffer;
-  hash: Buffer;
 }
 
 /** Lève une erreur si l'empreinte n'est pas un argon2id aux paramètres raisonnables. */
-export function parsePasswordHash(phc: string): PasswordHash {
-  const m = PHC_RE.exec(phc.trim());
+export function parsePasswordHash(value: string): PasswordHash {
+  const phc = value.trim();
+  const m = PHC_RE.exec(phc);
   if (!m) throw new Error('empreinte argon2id (format PHC) attendue');
   const [memory, passes, parallelism] = [Number(m[1]), Number(m[2]), Number(m[3])];
   const salt = Buffer.from(m[4]!, 'base64');
@@ -38,36 +31,19 @@ export function parsePasswordHash(phc: string): PasswordHash {
   if (passes < 2 || passes > 10) throw new Error('paramètre t hors limites');
   if (parallelism < 1 || parallelism > 16) throw new Error('paramètre p hors limites');
   if (salt.length < 8 || hash.length < 16) throw new Error('sel ou empreinte trop courts');
-  return { memory, passes, parallelism, salt, hash };
-}
-
-function derive(password: string, p: Omit<PasswordHash, 'hash'>, length: number): Promise<Buffer> {
-  return new Promise((resolve, reject) => {
-    argon2(
-      'argon2id',
-      {
-        message: Buffer.from(password, 'utf8'),
-        nonce: p.salt,
-        parallelism: p.parallelism,
-        tagLength: length,
-        memory: p.memory,
-        passes: p.passes,
-      },
-      (err, key) => (err ? reject(err) : resolve(key)),
-    );
-  });
+  return { phc, memory, passes, parallelism };
 }
 
 export async function verifyPassword(expected: PasswordHash, password: string): Promise<boolean> {
   if (password.length === 0 || password.length > MAX_PASSWORD_LENGTH) return false;
-  const derived = await derive(password, expected, expected.hash.length);
-  return timingSafeEqual(derived, expected.hash);
+  try {
+    return await argon2.verify(expected.phc, password);
+  } catch {
+    return false;
+  }
 }
 
-/** Paramètres identiques à ceux de PoppyTrip (bibliothèque argon2, valeurs par défaut). */
-export async function hashPassword(password: string): Promise<string> {
-  const params = { memory: 65_536, passes: 3, parallelism: 4, salt: randomBytes(16) };
-  const hash = await derive(password, params, 32);
-  const b64 = (b: Buffer) => b.toString('base64').replace(/=+$/, '');
-  return `$argon2id$v=19$m=${params.memory},t=${params.passes},p=${params.parallelism}$${b64(params.salt)}$${b64(hash)}`;
+/** Paramètres par défaut de la bibliothèque, identiques à PoppyTrip (m=65536, t=3, p=4). */
+export function hashPassword(password: string): Promise<string> {
+  return argon2.hash(password, { type: argon2.argon2id });
 }

@@ -72,7 +72,7 @@ describe('connexion par e-mail et mot de passe', () => {
   });
 
   it('accepte une empreinte aux paramètres de PoppyTrip (m=65536, t=3, p=4)', async () => {
-    const hash = testPasswordHash('autre-mot-de-passe-poppytrip', { m: 65_536, t: 3, p: 4 });
+    const hash = await testPasswordHash('autre-mot-de-passe-poppytrip', { m: 65_536, t: 3, p: 4 });
     t = await createTestApp({ now, env: { ADMIN_PASSWORD_HASH: hash } });
     expect((await login(t, { password: 'autre-mot-de-passe-poppytrip' })).statusCode).toBe(303);
   });

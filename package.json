@@ -5,7 +5,7 @@
   "description": "Site de suivi privé de PoppyTrip (service séparé, lecture seule)",
   "type": "module",
   "engines": {
-    "node": ">=24.7"
+    "node": ">=20.19"
   },
   "scripts": {
     "prepare": "node scripts/install-hooks.mjs",
@@ -23,6 +23,7 @@
     "@fastify/cookie": "11.1.5",
     "@fastify/helmet": "13.2.0",
     "@fastify/rate-limit": "11.2.2",
+    "argon2": "0.41.1",
     "fastify": "5.12.8",
     "nodemailer": "10.6.0",
     "pg": "8.23.1",
@@ -31,7 +32,7 @@
     "zod": "4.6.7"
   },
   "devDependencies": {
-    "@types/node": "24.19.2",
+    "@types/node": "20.19.43",
     "@types/nodemailer": "8.0.2",
     "@types/pg": "8.23.1",
     "@types/react": "19.3.0",
@@ -40,6 +41,6 @@
     "tsx": "4.23.15",
     "typescript": "7.0.2",
     "vite": "8.3.8",
-    "vitest": "5.1.1"
+    "vitest": "4.1.12"
   }
 }
